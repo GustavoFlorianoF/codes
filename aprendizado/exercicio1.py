@@ -6,16 +6,13 @@ transacoes = [
     {"tipo": "entrada", "valor": 1200},
     {"tipo": "saida", "valor": 300},
 ]
-
-
 def analising(transacoes):
-    maior_e = 0
-    maior_s = 0
-
     contador_e = 0
     contador_s = 0
     valor_e = 0
     valor_s = 0
+    maior_e = 0
+    maior_s = 0
 
     for t in transacoes:
         if t["tipo"] == "entrada":
@@ -32,8 +29,8 @@ def analising(transacoes):
             if t["valor"] > maior_s:
                 maior_s = t["valor"]
 
-    media_e = valor_e / contador_e if contador_e > 0 else 0
-    media_s = valor_s / contador_s if contador_s > 0 else 0
+    media_e = valor_e / contador_e
+    media_s = valor_s / contador_s
 
     print("---DADOS ANALISADOS---")
     print(f"Total valor de entrada: {valor_e}")
@@ -44,6 +41,5 @@ def analising(transacoes):
     print(f"Maior saida: {maior_s}")
     print(f"Quantidade de entrada: {contador_e}")
     print(f"Quantidade de saida: {contador_s}")
-
 
 analising(transacoes)
