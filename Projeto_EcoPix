@@ -1,0 +1,1059 @@
+"""Eco-Pix, um simulador de coleta de lixo eletrônico que paga pelo material.
+
+Mais ou menos é assim:
+  1. Mostra uns preços por kg na tela inicial.
+  2. A pessoa coloca nome, CPF e a chave Pix (tem que digitar a chave também,
+     pq ela pode ser de outra pessoa).
+  3. Escolhe uma gaveta livre, coloca as coisas e fecha ela.
+  4. O coletador entra com PIN, tira o material, pesa e confere. Aí sim
+     aparece o pagamento (é só uma simulação por enquanto).
+
+Esses preços são só exemplo, ainda tem que pesquisar melhor.
+Os dados ficam no arquivo ecopix_dados.json aqui na mesma pasta.
+"""
+import json
+import re
+import tkinter as tk
+from datetime import datetime
+from pathlib import Path
+from tkinter import filedialog, messagebox, ttk
+
+ARQUIVO = Path(__file__).with_name("ecopix_dados.json")
+TAXA = 0.10  # 10% fica pro projeto, mas esse valor ainda tem que ser confirmado
+PIN_COLETADOR = "123"
+
+# preços de exemplo por kg, depois tem que trocar pelos valores pesquisados
+PRECOS = {
+    "Placas eletrônicas": 25.00,
+    "Celulares": 12.00,
+    "Notebooks": 6.00,
+    "Cabos e fios": 4.00,
+    "Pilhas e baterias": 3.00,
+    "Eletrônicos pequenos": 1.50,
+}
+
+COR_FUNDO = "#2F3A45"
+COR_CARD = "#3B4856"
+COR_DESTAQUE = "#E8730C"
+COR_TEXTO = "#FFFFFF"
+COR_LIVRE = "#2E9E5B"
+COR_OCUPADA = "#C0392B"
+
+
+# ----------------------------------------------------------------- umas funcoes uteis
+def so_digitos(texto):
+    return re.sub(r"\D", "", texto)
+
+
+def validar_entrada_digitos(valor, limite):
+    return len(valor) <= int(limite) and re.fullmatch(r"[0-9]*", valor) is not None
+
+
+def validar_chave_aleatoria_parcial(valor):
+    return len(valor) <= 36 and re.fullmatch(r"[0-9a-fA-F-]*", valor) is not None
+
+
+def validar_peso_parcial(valor, limite=None):
+    return (limite is None or len(valor) <= int(limite)) and (
+        re.fullmatch(r"[0-9]*([,.][0-9]*)?", valor) is not None)
+
+
+def cpf_valido(cpf):
+    c = so_digitos(cpf)
+    if len(c) != 11 or c == c[0] * 11:
+        return False
+    for n in (9, 10):
+        soma = sum(int(c[i]) * (n + 1 - i) for i in range(n))
+        if (soma * 10) % 11 % 10 != int(c[n]):
+            return False
+    return True
+
+
+def formatar_cpf(cpf):
+    c = so_digitos(cpf)
+    return f"{c[:3]}.{c[3:6]}.{c[6:9]}-{c[9:]}"
+
+
+def mascarar_cpf(cpf):
+    c = so_digitos(cpf)
+    return f"***.{c[3:6]}.{c[6:9]}-**"
+
+
+def chave_valida(tipo, chave):
+    chave = chave.strip()
+    if tipo == "CPF":
+        return cpf_valido(chave)
+    if tipo == "Telefone":
+        d = so_digitos(chave)
+        if d.startswith("55") and len(d) > 11:
+            d = d[2:]
+        return len(d) in (10, 11)
+    return bool(re.fullmatch(r"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", chave))
+
+
+def normalizar_chave(tipo, chave):
+    chave = chave.strip()
+    if tipo == "CPF":
+        return formatar_cpf(chave)
+    if tipo == "Telefone":
+        return so_digitos(chave)
+    return chave.lower()
+
+
+def mascarar_chave(tipo, chave):
+    if tipo == "CPF":
+        return mascarar_cpf(chave)
+    if tipo == "Telefone":
+        return "(**) *****-" + so_digitos(chave)[-4:]
+    return chave[:4] + "..." + chave[-4:]
+
+
+def brl(valor):
+    s = f"{valor:,.2f}"
+    return "R$ " + s.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def agora():
+    return datetime.now().strftime("%d/%m/%Y %H:%M")
+
+
+# ----------------------------------------------------------------- dados que o programa usa
+def dados_iniciais():
+    # cria 10 gavetas, as capacidades vieram do exemplo do PDF e tem que conferir
+    gavetas = [{"id": i, "capacidade": 10 if i <= 5 else 100, "deposito": None}
+               for i in range(1, 11)]
+    return {"gavetas": gavetas, "historico": []}
+
+
+def carregar():
+    if ARQUIVO.exists():
+        try:
+            return json.loads(ARQUIVO.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+    return dados_iniciais()
+
+
+def salvar(dados):
+    try:
+        ARQUIVO.write_text(json.dumps(dados, ensure_ascii=False, indent=2),
+                           encoding="utf-8")
+    except OSError:
+        return False
+    return True
+
+
+# ----------------------------------------------------------------- pecas visuais que aparecem nas telas
+def titulo(pai, txt, tam=24):
+    return tk.Label(pai, text=txt, bg=COR_FUNDO, fg=COR_TEXTO,
+                    font=("Helvetica", max(tam, 26), "bold"))
+
+
+def texto(pai, txt, tam=12, justify="center"):
+    return tk.Label(pai, text=txt, bg=COR_FUNDO, fg=COR_TEXTO,
+                    font=("Helvetica", max(tam, 14)), justify=justify)
+
+
+class TelaBase(tk.Frame):
+    def __init__(self, pai, app):
+        super().__init__(pai, bg=COR_FUNDO)
+        self.app = app
+
+
+# ----------------------------------------------------------------- telas do programa
+class TelaInicio(TelaBase):
+    def __init__(self, pai, app):
+        super().__init__(pai, app)
+        titulo(self, "Descarte seu lixo eletrônico\ne receba por isso").pack(pady=(26, 6))
+        texto(self, "Veja quanto você pode ganhar (valor médio por kg):", 13).pack()
+
+        tabela = ttk.Treeview(self, columns=("material", "preco"), show="headings",
+                              height=len(PRECOS), selectmode="none")
+        tabela.heading("material", text="Material")
+        tabela.heading("preco", text="Valor médio por kg")
+        tabela.column("material", width=300)
+        tabela.column("preco", width=170, anchor="center")
+        for material, preco in PRECOS.items():
+            tabela.insert("", "end", values=(material, brl(preco)))
+        tabela.pack(pady=14)
+
+        texto(self, "O valor cai no seu Pix somente depois que o coletador retirar,\n"
+                    "pesar e conferir os materiais. Quanto mais você deixar, mais recebe!",
+              11).pack()
+        ttk.Button(self, text="COMEÇAR", style="Destaque.TButton",
+                   command=lambda: app.mostrar("TelaCadastro")).pack(pady=16, ipadx=30)
+        self.lbl_ocup = texto(self, "", 10)
+        self.lbl_ocup.pack()
+
+        ttk.Button(self, text="ÁREA DO COLETADOR",
+                   command=app.abrir_coletor).pack(pady=12)
+
+    def ao_mostrar(self):
+        self.lbl_ocup.config(text=f"Ocupação do ponto: {self.app.ocupacao()}%")
+
+
+class TelaCadastro(TelaBase):
+    TIPOS = ("Aleatória", "Telefone", "CPF")
+    DICAS = {
+        "Aleatória": "Cole a chave aleatória (ex.: 123e4567-e89b-12d3-a456-426614174000)",
+        "Telefone": "Digite só os números do telefone com DDD (ex.: 48999999999)",
+        "CPF": "Digite os 11 números do CPF da chave, sem ponto ou traço. "
+               "Pode ser de outra pessoa.",
+    }
+
+    def __init__(self, pai, app):
+        super().__init__(pai, app)
+        self.v_nome = tk.StringVar()
+        self.v_cpf = tk.StringVar()
+        self.v_tipo = tk.StringVar(value="Aleatória")
+        self.v_chave = tk.StringVar()
+        self.v_aceite = tk.BooleanVar()
+        self.v_teste = tk.BooleanVar(value=False)
+
+        conteudo = tk.Frame(self, bg=COR_FUNDO)
+        conteudo.pack(expand=True)
+
+        titulo(conteudo, "Cadastro").pack(pady=(12, 4))
+        texto(conteudo, "Preencha seus dados para receber o pagamento", 12).pack()
+
+        form = tk.Frame(conteudo, bg=COR_FUNDO)
+        form.pack(pady=12)
+
+        def campo(linha, rotulo, var, limite_digitos=None):
+            texto(form, rotulo, 14).grid(row=linha, column=0, sticky="e", padx=10, pady=10)
+            e = tk.Entry(form, textvariable=var, width=32, font=("Helvetica", 17))
+            if limite_digitos is not None:
+                e.configure(
+                    validate="key",
+                    validatecommand=(
+                        self.register(validar_entrada_digitos), "%P", limite_digitos),
+                )
+            e.grid(row=linha, column=1, sticky="w", pady=8)
+            return e
+
+        self.entrada_nome = campo(0, "Nome completo", self.v_nome)
+        app.registrar_campo(self.entrada_nome, "texto")
+        self.entrada_cpf = campo(1, "CPF", self.v_cpf, limite_digitos=11)
+        app.registrar_campo(self.entrada_cpf, "numero", 11)
+
+        texto(form, "Tipo da chave Pix", 14).grid(row=2, column=0, sticky="e", padx=10, pady=10)
+        radios = tk.Frame(form, bg=COR_FUNDO)
+        radios.grid(row=2, column=1, sticky="w")
+        for tipo in self.TIPOS:
+            tk.Radiobutton(radios, text=tipo, value=tipo, variable=self.v_tipo,
+                           bg=COR_FUNDO, fg=COR_TEXTO, selectcolor=COR_CARD,
+                           activebackground=COR_FUNDO, activeforeground=COR_TEXTO,
+                           indicatoron=False, width=11, height=2,
+                           font=("Helvetica", 14, "bold")).pack(side="left", padx=5)
+
+        self.entrada_chave = campo(3, "Chave Pix", self.v_chave)
+        app.registrar_campo(self.entrada_chave, "chave", 36)
+        self._validar_digitos = self.register(validar_entrada_digitos)
+        self._validar_aleatoria = self.register(validar_chave_aleatoria_parcial)
+        self.lbl_dica = texto(conteudo, self.DICAS["Aleatória"], 10)
+        self.lbl_dica.pack()
+
+        def atualizar_dica(*_):
+            tipo = self.v_tipo.get()
+            self.lbl_dica.config(text=self.DICAS[tipo])
+            if tipo == "Aleatória":
+                self.entrada_chave.configure(
+                    validatecommand=(self._validar_aleatoria, "%P"))
+                app.registrar_campo(self.entrada_chave, "chave", 36)
+                entrada_valida = validar_chave_aleatoria_parcial(self.v_chave.get())
+            else:
+                self.entrada_chave.configure(
+                    validatecommand=(self._validar_digitos, "%P", 11))
+                app.registrar_campo(self.entrada_chave, "numero", 11)
+                entrada_valida = validar_entrada_digitos(self.v_chave.get(), 11)
+            if not entrada_valida:
+                self.v_chave.set("")
+
+        self.entrada_chave.configure(
+            validate="key",
+            validatecommand=(self._validar_aleatoria, "%P"),
+        )
+        self.v_tipo.trace_add("write", atualizar_dica)
+
+        tk.Checkbutton(conteudo, variable=self.v_teste, bg=COR_FUNDO, fg=COR_TEXTO,
+                       selectcolor=COR_CARD, activebackground=COR_FUNDO,
+                       activeforeground=COR_TEXTO, font=("Helvetica", 14),
+                       height=2, padx=12, anchor="w",
+                       text="Marcar como cadastro de teste (pode ser apagado depois)."
+                       ).pack(fill="x", pady=(12, 2))
+
+        tk.Checkbutton(conteudo, variable=self.v_aceite, bg=COR_FUNDO, fg=COR_TEXTO,
+                       selectcolor=COR_CARD, activebackground=COR_FUNDO,
+                       activeforeground=COR_TEXTO, wraplength=620, justify="left",
+                       font=("Helvetica", 14), height=2, padx=12, anchor="w",
+                       text="Autorizo o uso do meu nome, CPF e chave Pix apenas para "
+                            "identificação e pagamento (LGPD)."
+                       ).pack(fill="x", pady=14)
+
+        botoes = tk.Frame(conteudo, bg=COR_FUNDO)
+        botoes.pack()
+        ttk.Button(botoes, text="Voltar",
+                   command=lambda: app.mostrar("TelaInicio")).pack(side="left", padx=10)
+        ttk.Button(botoes, text="CONTINUAR", style="Destaque.TButton",
+                   command=self.continuar).pack(side="left", padx=10)
+
+    def ao_mostrar(self):
+        self.v_nome.set("")
+        self.v_cpf.set("")
+        self.v_chave.set("")
+        self.v_tipo.set("Aleatória")
+        self.v_aceite.set(False)
+        self.v_teste.set(False)
+        self.entrada_nome.focus_set()
+
+    def continuar(self):
+        nome = self.v_nome.get().strip()
+        cpf = self.v_cpf.get().strip()
+        tipo = self.v_tipo.get()
+        chave = self.v_chave.get().strip()
+
+        if len(nome) < 3:
+            return messagebox.showwarning("Cadastro", "Informe seu nome completo.")
+        if not cpf_valido(cpf):
+            return messagebox.showwarning("Cadastro", "CPF inválido. Confira os números.")
+        if not chave_valida(tipo, chave):
+            return messagebox.showwarning(
+                "Cadastro", f"Chave Pix inválida para o tipo '{tipo}'.\n{self.DICAS[tipo]}")
+        if not self.v_aceite.get():
+            return messagebox.showwarning("Cadastro", "É preciso autorizar o uso dos dados.")
+
+        self.app.usuario = {
+            "nome": nome,
+            "cpf": formatar_cpf(cpf),
+            "tipo_chave": tipo,
+            "chave": normalizar_chave(tipo, chave),
+            "teste": self.v_teste.get(),
+        }
+        self.app.mostrar("TelaGavetas")
+
+
+class TelaGavetas(TelaBase):
+    def __init__(self, pai, app):
+        super().__init__(pai, app)
+        titulo(self, "Escolha uma gaveta").pack(pady=(24, 8))
+        texto(self, "Verde = livre   |   Vermelha = em uso", 14).pack()
+        self.grade = tk.Frame(self, bg=COR_FUNDO)
+        self.grade.pack(pady=18)
+        ttk.Button(self, text="Voltar",
+                   command=lambda: app.mostrar("TelaCadastro")).pack()
+
+    def ao_mostrar(self):
+        for w in self.grade.winfo_children():
+            w.destroy()
+        for i, g in enumerate(self.app.dados["gavetas"]):
+            livre = g["deposito"] is None
+            card = tk.Button(
+                self.grade,
+                text=f"Gaveta {g['id']}\nAté {g['capacidade']} kg\n{'LIVRE' if livre else 'EM USO'}",
+                bg=COR_LIVRE if livre else COR_OCUPADA,
+                activebackground=COR_LIVRE if livre else COR_OCUPADA,
+                fg="white", activeforeground="white",
+                font=("Helvetica", 16, "bold"), width=17, height=5,
+                relief="raised", bd=4, state="normal" if livre else "disabled")
+            card.grid(row=i // 5, column=i % 5, padx=8, pady=8)
+            if livre:
+                card.configure(command=lambda gid=g["id"]: self.escolher(gid))
+
+    def escolher(self, gid):
+        g = self.app.gaveta(gid)
+        if g["deposito"] is not None or self.app.usuario is None:
+            return self.app.mostrar("TelaInicio")
+        g["deposito"] = {**self.app.usuario, "data": agora(), "status": "aberta"}
+        salvar(self.app.dados)
+        self.app.gaveta_atual = gid
+        self.app.mostrar("TelaDeposito")
+
+
+class TelaDeposito(TelaBase):
+    def __init__(self, pai, app):
+        super().__init__(pai, app)
+        self.lbl_titulo = titulo(self, "", 26)
+        self.lbl_titulo.pack(pady=(60, 12))
+        self.lbl_info = texto(self, "", 14)
+        self.lbl_info.pack(pady=10)
+        texto(self, "Depois de fechar, a gaveta fica bloqueada até a coleta.\n"
+                    "O pagamento será feito no seu Pix após a conferência dos materiais.",
+              11).pack(pady=14)
+        botoes = tk.Frame(self, bg=COR_FUNDO)
+        botoes.pack(pady=20)
+        ttk.Button(botoes, text="Cancelar", command=self.cancelar).pack(side="left", padx=10)
+        ttk.Button(botoes, text="FECHAR GAVETA", style="Destaque.TButton",
+                   command=self.fechar).pack(side="left", padx=10)
+
+    def ao_mostrar(self):
+        g = self.app.gaveta(self.app.gaveta_atual)
+        self.lbl_titulo.config(text=f"Gaveta {g['id']} aberta")
+        self.lbl_info.config(text=f"Coloque seus materiais na gaveta (até {g['capacidade']} kg).\n"
+                                  "Quando terminar, clique em 'Fechar gaveta'.")
+
+    def fechar(self):
+        if not messagebox.askyesno("Fechar gaveta",
+                                   "Fechar e bloquear a gaveta?\nDepois só o coletador consegue abrir."):
+            return
+        g = self.app.gaveta(self.app.gaveta_atual)
+        g["deposito"]["status"] = "bloqueada"
+        salvar(self.app.dados)
+        messagebox.showinfo("Gaveta bloqueada",
+                            "Pronto! O valor será enviado ao Pix informado depois que o "
+                            "coletador retirar, pesar e conferir os materiais.")
+        self.app.usuario = None
+        self.app.gaveta_atual = None
+        self.app.mostrar("TelaInicio")
+
+    def cancelar(self):
+        self.app.gaveta(self.app.gaveta_atual)["deposito"] = None
+        salvar(self.app.dados)
+        self.app.gaveta_atual = None
+        self.app.mostrar("TelaGavetas")
+
+
+class TelaColetor(TelaBase):
+    def __init__(self, pai, app):
+        super().__init__(pai, app)
+        self.itens = []  # aqui vai ficando o material e o peso que foi colocado
+        self.gaveta_sel = None
+
+        titulo(self, "Área do coletador", 20).pack(pady=(12, 6))
+        corpo = tk.Frame(self, bg=COR_FUNDO)
+        corpo.pack(fill="both", expand=True, padx=16)
+
+        # lado esquerdo, mostra as gavetas esperando o coletador
+        esq = tk.Frame(corpo, bg=COR_FUNDO)
+        esq.pack(side="left", fill="both", expand=True)
+        texto(esq, "Gavetas aguardando coleta", 12).pack(anchor="w")
+        self.tab_g = ttk.Treeview(esq, columns=("g", "cap", "nome", "cpf", "data"),
+                                  show="headings", height=10, selectmode="browse")
+        for col, tit, larg in (("g", "Gaveta", 55), ("cap", "Cap.", 55),
+                               ("nome", "Usuário", 120), ("cpf", "CPF", 105),
+                               ("data", "Depósito", 110)):
+            self.tab_g.heading(col, text=tit)
+            self.tab_g.column(col, width=larg, anchor="center")
+        self.tab_g.pack(fill="both", expand=True, pady=4)
+        self.tab_g.bind("<<TreeviewSelect>>", self.selecionar)
+        self.lbl_ocup = texto(esq, "", 11, "left")
+        self.lbl_ocup.pack(anchor="w")
+
+        # lado direito, onde coloca os pesos e confere tudo
+        dire = tk.Frame(corpo, bg=COR_FUNDO)
+        dire.pack(side="right", fill="both", expand=True, padx=(16, 0))
+        self.lbl_sel = texto(dire, "", 12, "left")
+        self.lbl_sel.pack(anchor="w")
+
+        linha = tk.Frame(dire, bg=COR_FUNDO)
+        linha.pack(anchor="w", pady=6)
+        self.v_mat = tk.StringVar(value=list(PRECOS)[0])
+        ttk.Combobox(linha, textvariable=self.v_mat, values=list(PRECOS),
+                     state="readonly", width=20).pack(side="left")
+        self.v_peso = tk.StringVar()
+        self.entrada_peso = tk.Entry(linha, textvariable=self.v_peso, width=8,
+                                     font=("Helvetica", 16))
+        self.entrada_peso.configure(
+            validate="key",
+            validatecommand=(self.register(validar_peso_parcial), "%P", 8),
+        )
+        self.entrada_peso.pack(side="left", padx=6)
+        texto(linha, "kg", 14).pack(side="left")
+        app.registrar_campo(self.entrada_peso, "peso", 8)
+        ttk.Button(linha, text="Adicionar", command=self.adicionar).pack(side="left", padx=8)
+
+        self.tab_i = ttk.Treeview(dire, columns=("m", "kg", "p", "s"), show="headings",
+                                  height=6, selectmode="browse")
+        for col, tit, larg in (("m", "Material", 130), ("kg", "Peso", 55),
+                               ("p", "R$/kg", 70), ("s", "Subtotal", 85)):
+            self.tab_i.heading(col, text=tit)
+            self.tab_i.column(col, width=larg, anchor="center")
+        self.tab_i.pack(fill="x")
+        ttk.Button(dire, text="Remover item selecionado",
+                   command=self.remover).pack(anchor="w", pady=4)
+
+        self.lbl_res = texto(dire, "", 12, "left")
+        self.lbl_res.pack(anchor="w", pady=4)
+        ttk.Button(dire, text="CONFIRMAR COLETA E PAGAR (PIX)", style="Destaque.TButton",
+                   command=self.pagar).pack(anchor="w", pady=6)
+
+        acoes = tk.Frame(self, bg=COR_FUNDO)
+        acoes.pack(pady=5)
+        ttk.Button(acoes, text="Baixar JSON",
+                   command=app.exportar_json).pack(side="left", padx=5)
+        ttk.Button(acoes, text="Resetar gavetas",
+                   command=self.resetar_gavetas).pack(side="left", padx=5)
+        ttk.Button(acoes, text="Apagar cadastros de teste",
+                   command=self.apagar_testes).pack(side="left", padx=5)
+        ttk.Button(acoes, text="Sair da área do coletador",
+                   command=lambda: app.mostrar("TelaInicio")).pack(side="left", padx=5)
+
+    # atualiza o que aparece na tela
+    def ao_mostrar(self):
+        self.itens = []
+        self.gaveta_sel = None
+        self.atualizar()
+
+    def atualizar(self):
+        self.tab_g.delete(*self.tab_g.get_children())
+        for g in self.app.dados["gavetas"]:
+            dep = g["deposito"]
+            if dep and dep.get("status") == "bloqueada":
+                self.tab_g.insert("", "end", iid=str(g["id"]), values=(
+                    g["id"], f"{g['capacidade']} kg", dep["nome"],
+                    mascarar_cpf(dep["cpf"]), dep["data"]))
+        self.lbl_ocup.config(text=f"Ocupação do ponto: {self.app.ocupacao()}%")
+        self.atualizar_itens()
+
+    def atualizar_itens(self):
+        self.tab_i.delete(*self.tab_i.get_children())
+        for i, (mat, kg) in enumerate(self.itens):
+            self.tab_i.insert("", "end", iid=str(i), values=(
+                mat, f"{kg:.2f}", brl(PRECOS[mat]), brl(kg * PRECOS[mat])))
+        if self.gaveta_sel is None:
+            self.lbl_sel.config(text="Selecione uma gaveta na lista")
+        else:
+            dep = self.app.gaveta(self.gaveta_sel)["deposito"]
+            self.lbl_sel.config(
+                text=f"Gaveta {self.gaveta_sel} - {dep['nome']}\n"
+                     f"Pix ({dep['tipo_chave']}): {mascarar_chave(dep['tipo_chave'], dep['chave'])}")
+        peso, bruto, taxa, liquido = self.totais()
+        self.lbl_res.config(
+            text=f"Peso total: {peso:.2f} kg\nValor bruto: {brl(bruto)}\n"
+                 f"Taxa ({int(TAXA * 100)}%): {brl(taxa)}\nA pagar ao usuário: {brl(liquido)}")
+
+    def totais(self):
+        peso = sum(kg for _, kg in self.itens)
+        bruto = sum(kg * PRECOS[m] for m, kg in self.itens)
+        taxa = round(bruto * TAXA, 2)
+        return round(peso, 2), round(bruto, 2), taxa, round(bruto - taxa, 2)
+
+    # botoes e outras coisas que o coletador faz
+    def selecionar(self, _evento=None):
+        sel = self.tab_g.selection()
+        if not sel:
+            return
+        self.gaveta_sel = int(sel[0])
+        self.itens = []
+        self.atualizar_itens()
+
+    def adicionar(self):
+        if self.gaveta_sel is None:
+            return messagebox.showwarning("Coleta", "Selecione uma gaveta primeiro.")
+        try:
+            kg = float(self.v_peso.get().replace(",", "."))
+        except ValueError:
+            return messagebox.showwarning("Coleta", "Informe um peso válido (ex.: 1,5).")
+        if kg <= 0:
+            return messagebox.showwarning("Coleta", "O peso deve ser maior que zero.")
+        self.itens.append((self.v_mat.get(), round(kg, 2)))
+        self.v_peso.set("")
+        self.atualizar_itens()
+
+    def remover(self):
+        sel = self.tab_i.selection()
+        if sel:
+            del self.itens[int(sel[0])]
+            self.atualizar_itens()
+
+    def pagar(self):
+        if self.gaveta_sel is None or not self.itens:
+            return messagebox.showwarning("Coleta", "Selecione uma gaveta e adicione os itens pesados.")
+        g = self.app.gaveta(self.gaveta_sel)
+        dep = g["deposito"]
+        peso, bruto, taxa, liquido = self.totais()
+        if peso > g["capacidade"] and not messagebox.askyesno(
+                "Peso acima da capacidade",
+                f"O peso ({peso:.2f} kg) passa da capacidade da gaveta "
+                f"({g['capacidade']} kg).\nConfirmar mesmo assim?"):
+            return
+        if not messagebox.askyesno(
+                "Confirmar pagamento",
+                f"Pagar {brl(liquido)} para {dep['nome']}?\n"
+                f"Pix ({dep['tipo_chave']}): {mascarar_chave(dep['tipo_chave'], dep['chave'])}"):
+            return
+
+        self.app.dados["historico"].append({
+            "gaveta": g["id"], "nome": dep["nome"], "cpf": dep["cpf"],
+            "tipo_chave": dep["tipo_chave"], "chave": dep["chave"],
+            "data_deposito": dep["data"], "data_pagamento": agora(),
+            "itens": [[m, kg] for m, kg in self.itens],
+            "peso_total": peso, "valor_bruto": bruto, "taxa": taxa, "valor_pago": liquido,
+            "teste": dep.get("teste", False),
+        })
+        g["deposito"] = None  # pronto, a gaveta pode ser usada de novo
+        salvar(self.app.dados)
+        messagebox.showinfo(
+            "Pix enviado (simulação)",
+            f"Comprovante\n\nFavorecido: {dep['nome']}\n"
+            f"Chave ({dep['tipo_chave']}): {mascarar_chave(dep['tipo_chave'], dep['chave'])}\n"
+            f"Peso conferido: {peso:.2f} kg\nValor pago: {brl(liquido)}\n{agora()}")
+        self.ao_mostrar()
+
+    def resetar_gavetas(self):
+        ocupadas = [(g, g["deposito"]) for g in self.app.dados["gavetas"]
+                    if g["deposito"] is not None]
+        if not ocupadas:
+            return messagebox.showinfo("Resetar gavetas", "Não tem gaveta ocupada.", parent=self)
+        if not messagebox.askyesno(
+                "Resetar gavetas",
+                "Isso vai apagar os depósitos que estão nas gavetas. Quer continuar?",
+                parent=self):
+            return
+
+        for g, _ in ocupadas:
+            g["deposito"] = None
+        if not salvar(self.app.dados):
+            for g, deposito in ocupadas:
+                g["deposito"] = deposito
+            self.atualizar()
+            return messagebox.showerror(
+                "Erro ao salvar", f"Não foi possível salvar os dados em {ARQUIVO}.",
+                parent=self)
+
+        self.gaveta_sel = None
+        self.itens = []
+        self.atualizar()
+        messagebox.showinfo("Resetar gavetas", "As gavetas foram liberadas.", parent=self)
+
+    def apagar_testes(self):
+        gavetas_teste = [(g, g["deposito"]) for g in self.app.dados["gavetas"]
+                         if g["deposito"] and g["deposito"].get("teste", False)]
+        historico = self.app.dados.get("historico", [])
+        historico_teste = [registro for registro in historico
+                           if registro.get("teste", False)]
+        if not gavetas_teste and not historico_teste:
+            return messagebox.showinfo(
+                "Apagar cadastros de teste", "Não tem cadastro de teste salvo.", parent=self)
+        if not messagebox.askyesno(
+                "Apagar cadastros de teste",
+                f"Apagar {len(gavetas_teste)} depósito(s) de teste nas gavetas e "
+                f"{len(historico_teste)} registro(s) de teste do histórico?",
+                parent=self):
+            return
+
+        historico_anterior = historico
+        for g, _ in gavetas_teste:
+            g["deposito"] = None
+        self.app.dados["historico"] = [
+            registro for registro in historico if not registro.get("teste", False)]
+        if not salvar(self.app.dados):
+            for g, deposito in gavetas_teste:
+                g["deposito"] = deposito
+            self.app.dados["historico"] = historico_anterior
+            self.atualizar()
+            return messagebox.showerror(
+                "Erro ao salvar", f"Não foi possível salvar os dados em {ARQUIVO}.",
+                parent=self)
+
+        self.gaveta_sel = None
+        self.itens = []
+        self.atualizar()
+        messagebox.showinfo("Apagar cadastros de teste", "Os registros de teste foram apagados.",
+                            parent=self)
+
+
+# ----------------------------------------------------------------- programa principal
+class App(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Eco-Pix - Recicle e Receba")
+        largura = min(1200, self.winfo_screenwidth() - 40)
+        altura = min(800, self.winfo_screenheight() - 80)
+        self.geometry(f"{largura}x{altura}")
+        self.minsize(min(900, largura), min(600, altura))
+        self.configure(bg=COR_FUNDO)
+        self._tela_cheia = True
+        self._campos_teclado = {}
+        self._teclados = {}
+        self._campos_por_host = {}
+        self._teclado_aberto = None
+        self._entrada_teclado = None
+        self._modo_teclado = None
+        self._teclado_shift = True
+        self._teclado_simbolos = False
+        self.bind("<Escape>", self.tecla_escape)
+        self.bind("<F11>", self.alternar_tela_cheia)
+        self.bind_all("<Button-1>", self.clique_global, add="+")
+
+        self.dados = carregar()
+        for g in self.dados["gavetas"]:  # se fechou o programa com gaveta aberta, libera ela aqui
+            if g["deposito"] and g["deposito"].get("status") == "aberta":
+                g["deposito"] = None
+        self.usuario = None
+        self.gaveta_atual = None
+        self.estilo()
+
+        topo = tk.Frame(self, bg=COR_DESTAQUE)
+        topo.pack(fill="x")
+        tk.Label(topo, text="ECO-PIX  -  RECICLE E RECEBA", bg=COR_DESTAQUE, fg="white",
+                 font=("Helvetica", 20, "bold")).pack(side="left", padx=20, pady=12)
+        tk.Label(topo, text="24 HORAS", bg=COR_DESTAQUE, fg="white",
+                 font=("Helvetica", 18, "bold")).pack(side="right", padx=16)
+        self.btn_tela_cheia = ttk.Button(
+            topo, text="SAIR DA TELA CHEIA", command=self.alternar_tela_cheia)
+        self.btn_tela_cheia.pack(side="right", padx=10)
+
+        container = tk.Frame(self, bg=COR_FUNDO)
+        container.pack(fill="both", expand=True)
+        container.grid_rowconfigure(0, weight=1)
+        container.grid_columnconfigure(0, weight=1)
+        self.telas = {}
+        for classe in (TelaInicio, TelaCadastro, TelaGavetas, TelaDeposito, TelaColetor):
+            tela = classe(container, self)
+            tela.grid(row=0, column=0, sticky="nsew")
+            self.telas[classe.__name__] = tela
+        self.mostrar("TelaInicio")
+        self.attributes("-fullscreen", True)
+
+    def estilo(self):
+        s = ttk.Style(self)
+        try:
+            s.theme_use("clam")
+        except tk.TclError:
+            pass
+        s.configure("Treeview", background=COR_CARD, fieldbackground=COR_CARD,
+                    foreground="white", rowheight=44, font=("Helvetica", 14))
+        s.configure("Treeview.Heading", background=COR_DESTAQUE, foreground="white",
+                    font=("Helvetica", 14, "bold"))
+        s.map("Treeview", background=[("selected", COR_DESTAQUE)])
+        s.configure("TButton", font=("Helvetica", 15), padding=(16, 12))
+        s.configure("Destaque.TButton", background=COR_DESTAQUE, foreground="white",
+                    font=("Helvetica", 17, "bold"), padding=(20, 14))
+        s.map("Destaque.TButton", background=[("active", "#FF8A26")])
+        s.configure("TCombobox", font=("Helvetica", 16), padding=(10, 10))
+        s.configure("Teclado.TButton", font=("Helvetica", 17, "bold"),
+                    padding=(8, 8), foreground="#263238", background="#F7F9FA")
+        s.map("Teclado.TButton", background=[("active", "#E0E5EA")])
+        s.configure("TecladoEspecial.TButton", font=("Helvetica", 15, "bold"),
+                    padding=(10, 8), foreground="#263238", background="#C7D0D9")
+        s.map("TecladoEspecial.TButton", background=[("active", "#AEBBC7")])
+        s.configure("TecladoEnter.TButton", font=("Helvetica", 15, "bold"),
+                    padding=(10, 8), foreground="white", background=COR_DESTAQUE)
+        s.map("TecladoEnter.TButton", background=[("active", "#FF8A26")])
+
+    def alternar_tela_cheia(self, _evento=None):
+        self._tela_cheia = not self._tela_cheia
+        self.attributes("-fullscreen", self._tela_cheia)
+        self.btn_tela_cheia.config(
+            text="SAIR DA TELA CHEIA" if self._tela_cheia else "TELA CHEIA")
+        return "break"
+
+    def tecla_escape(self, evento=None):
+        if self._teclado_aberto:
+            self.esconder_teclado()
+            return "break"
+        return self.alternar_tela_cheia(evento)
+
+    def registrar_campo(self, entrada, modo, limite=None):
+        host = entrada.winfo_toplevel()
+        novo = entrada not in self._campos_teclado
+        self._campos_teclado[entrada] = (modo, limite)
+        self._campos_por_host.setdefault(host, set()).add(entrada)
+        if not novo:
+            return
+        entrada.bind("<FocusIn>", self.campo_ativado, add="+")
+        entrada.bind("<Button-1>", self.campo_clicado, add="+")
+        if host is not self:
+            host.bind(
+                "<Destroy>",
+                lambda evento, h=host: self.limpar_campos_host(evento, h),
+                add="+",
+            )
+
+    def campo_ativado(self, evento):
+        entrada = evento.widget
+        self.after_idle(lambda: self.mostrar_teclado(entrada))
+
+    def campo_clicado(self, evento):
+        entrada = evento.widget
+        self.after_idle(lambda: self.mostrar_teclado(entrada))
+
+    def limpar_campos_host(self, evento, host):
+        if evento.widget is not host:
+            return
+        for entrada in self._campos_por_host.pop(host, set()):
+            self._campos_teclado.pop(entrada, None)
+        self._teclados.pop(host, None)
+        if self._teclado_aberto and self._teclado_aberto[0] is host:
+            self._teclado_aberto = None
+            self._entrada_teclado = None
+            self._modo_teclado = None
+
+    def widget_dentro(self, widget, pai):
+        while widget is not None:
+            if widget is pai:
+                return True
+            widget = getattr(widget, "master", None)
+        return False
+
+    def clique_global(self, evento):
+        if not self._teclado_aberto or evento.widget in self._campos_teclado:
+            return
+        _, painel = self._teclado_aberto
+        if not self.widget_dentro(evento.widget, painel):
+            self.esconder_teclado()
+
+    def mostrar_teclado(self, entrada):
+        if not entrada.winfo_exists() or entrada not in self._campos_teclado:
+            return
+        host = entrada.winfo_toplevel()
+        modo, _ = self._campos_teclado[entrada]
+        if (self._teclado_aberto and self._teclado_aberto[0] is host
+                and self._entrada_teclado is entrada):
+            return
+        if self._teclado_aberto and self._teclado_aberto[0] is not host:
+            self.esconder_teclado()
+        painel = self._teclados.get(host)
+        if painel is None:
+            painel = tk.Frame(host, bg="#D5DCE2", padx=8, pady=6)
+            self._teclados[host] = painel
+        self._teclado_aberto = (host, painel)
+        self._entrada_teclado = entrada
+        self._modo_teclado = modo
+        self._teclado_shift = modo == "texto" and not entrada.get()
+        self._teclado_simbolos = False
+        self.desenhar_teclado(painel, modo)
+        if not painel.winfo_manager():
+            painel.pack(side="bottom", fill="x")
+        painel.lift()
+
+    def esconder_teclado(self):
+        if not self._teclado_aberto:
+            return
+        _, painel = self._teclado_aberto
+        painel.pack_forget()
+        self._teclado_aberto = None
+        self._entrada_teclado = None
+        self._modo_teclado = None
+
+    def inserir_tecla(self, caractere):
+        entrada = self._entrada_teclado
+        if not entrada or not entrada.winfo_exists():
+            return
+        if entrada.selection_present():
+            inicio = entrada.index("sel.first")
+            fim = entrada.index("sel.last")
+            entrada.delete(inicio, fim)
+            posicao = inicio
+        else:
+            posicao = entrada.index(tk.INSERT)
+        entrada.insert(posicao, caractere)
+        entrada.icursor(posicao + len(caractere))
+        entrada.focus_set()
+        if self._modo_teclado == "texto" and caractere.isalpha() and self._teclado_shift:
+            self._teclado_shift = False
+            self.atualizar_teclado()
+
+    def apagar_tecla(self):
+        entrada = self._entrada_teclado
+        if not entrada or not entrada.winfo_exists():
+            return
+        if entrada.selection_present():
+            entrada.delete("sel.first", "sel.last")
+        else:
+            posicao = entrada.index(tk.INSERT)
+            if posicao:
+                entrada.delete(posicao - 1, posicao)
+        entrada.focus_set()
+
+    def limpar_entrada_teclado(self):
+        entrada = self._entrada_teclado
+        if entrada and entrada.winfo_exists():
+            entrada.delete(0, tk.END)
+            entrada.focus_set()
+
+    def desenhar_teclado(self, painel, modo):
+        for widget in painel.winfo_children():
+            widget.destroy()
+        painel.configure(bg="#D5DCE2")
+
+        def linha():
+            faixa = tk.Frame(painel, bg="#D5DCE2")
+            faixa.pack()
+            return faixa
+
+        def tecla(pai, rotulo, comando, estilo="Teclado.TButton", largura=4):
+            botao = ttk.Button(
+                pai, text=rotulo, command=comando, style=estilo,
+                width=largura, takefocus=False,
+            )
+            botao.pack(side="left", padx=3, pady=3, ipady=5)
+            return botao
+
+        def inserir(caractere):
+            self.inserir_tecla(caractere)
+
+        if modo in ("numero", "peso"):
+            for teclas in ("123", "456", "789"):
+                faixa = linha()
+                for caractere in teclas:
+                    tecla(faixa, caractere, lambda c=caractere: inserir(c),
+                          largura=7)
+            faixa = linha()
+            if modo == "peso":
+                tecla(faixa, ",", lambda: inserir(","), "TecladoEspecial.TButton", 7)
+            else:
+                tecla(faixa, "Limpar", self.limpar_entrada_teclado,
+                      "TecladoEspecial.TButton", 7)
+            tecla(faixa, "0", lambda: inserir("0"), largura=7)
+            tecla(faixa, "⌫", self.apagar_tecla, "TecladoEspecial.TButton", 7)
+            faixa = linha()
+            tecla(faixa, "Feito", self.esconder_teclado,
+                  "TecladoEnter.TButton", 12)
+            return
+
+        if modo == "chave":
+            for teclas in ("1234567890", "abcdef"):
+                faixa = linha()
+                for caractere in teclas:
+                    tecla(faixa, caractere, lambda c=caractere: inserir(c))
+            faixa = linha()
+            tecla(faixa, "-", lambda: inserir("-"), largura=8)
+            tecla(faixa, "⌫", self.apagar_tecla, "TecladoEspecial.TButton", 8)
+            tecla(faixa, "Limpar", self.limpar_entrada_teclado,
+                  "TecladoEspecial.TButton", 8)
+            faixa = linha()
+            tecla(faixa, "Feito", self.esconder_teclado,
+                  "TecladoEnter.TButton", 12)
+            return
+
+        if self._teclado_simbolos:
+            for teclas in ("1234567890", "@#$%&*-+()", "!?'/;:,."):
+                faixa = linha()
+                for caractere in teclas:
+                    tecla(faixa, caractere, lambda c=caractere: inserir(c))
+        else:
+            for teclas in ("qwertyuiop", "asdfghjkl"):
+                faixa = linha()
+                for caractere in teclas:
+                    rotulo = caractere.upper() if self._teclado_shift else caractere
+                    tecla(faixa, rotulo, lambda c=rotulo: inserir(c))
+            faixa = linha()
+            tecla(faixa, "⇧", self.alternar_shift,
+                  "TecladoEspecial.TButton", 7)
+            for caractere in "zxcvbnm":
+                rotulo = caractere.upper() if self._teclado_shift else caractere
+                tecla(faixa, rotulo, lambda c=rotulo: inserir(c))
+            tecla(faixa, "⌫", self.apagar_tecla,
+                  "TecladoEspecial.TButton", 7)
+            faixa = linha()
+            for caractere in "áéíóúãõç":
+                tecla(faixa, caractere.upper() if self._teclado_shift else caractere,
+                      lambda c=caractere.upper() if self._teclado_shift else caractere: inserir(c),
+                      "TecladoEspecial.TButton", 3)
+
+        faixa = linha()
+        tecla(faixa, "ABC" if self._teclado_simbolos else "?123",
+              self.alternar_simbolos, "TecladoEspecial.TButton", 7)
+        tecla(faixa, ",", lambda: inserir(","), "TecladoEspecial.TButton", 4)
+        tecla(faixa, "Espaço", lambda: inserir(" "), largura=22)
+        tecla(faixa, ".", lambda: inserir("."), "TecladoEspecial.TButton", 4)
+        tecla(faixa, "Feito", self.esconder_teclado,
+              "TecladoEnter.TButton", 7)
+
+    def atualizar_teclado(self):
+        if self._teclado_aberto:
+            self.desenhar_teclado(self._teclado_aberto[1], self._modo_teclado)
+
+    def alternar_shift(self):
+        self._teclado_shift = not self._teclado_shift
+        self.atualizar_teclado()
+
+    def alternar_simbolos(self):
+        self._teclado_simbolos = not self._teclado_simbolos
+        self.atualizar_teclado()
+
+    def pedir_pin(self):
+        janela = tk.Toplevel(self)
+        janela.title("PIN do coletador")
+        janela.configure(bg=COR_FUNDO)
+        janela.transient(self)
+        valor = tk.StringVar()
+        resultado = {"pin": None}
+
+        texto(janela, "Digite o PIN do coletador", 18).pack(pady=(20, 10))
+        entrada = tk.Entry(
+            janela, textvariable=valor, show="*", font=("Helvetica", 24),
+            justify="center", width=10,
+            validate="key",
+            validatecommand=(self.register(validar_entrada_digitos), "%P",
+                             len(PIN_COLETADOR)),
+        )
+        entrada.pack(padx=20, pady=8, ipady=8)
+        self.registrar_campo(entrada, "numero", len(PIN_COLETADOR))
+
+        botoes = tk.Frame(janela, bg=COR_FUNDO)
+        botoes.pack(pady=(6, 18))
+
+        def confirmar():
+            resultado["pin"] = valor.get()
+            if self._teclado_aberto and self._teclado_aberto[0] is janela:
+                self.esconder_teclado()
+            janela.destroy()
+
+        def cancelar():
+            if self._teclado_aberto and self._teclado_aberto[0] is janela:
+                self.esconder_teclado()
+            janela.destroy()
+
+        ttk.Button(botoes, text="Cancelar", command=cancelar).pack(side="left", padx=8)
+        ttk.Button(botoes, text="ENTRAR", style="Destaque.TButton",
+                   command=confirmar).pack(side="left", padx=8)
+        janela.update_idletasks()
+        x = (self.winfo_screenwidth() - janela.winfo_reqwidth()) // 2
+        y = (self.winfo_screenheight() - janela.winfo_reqheight()) // 2
+        janela.geometry(f"+{x}+{y}")
+        janela.bind("<Escape>", lambda _evento: cancelar())
+        entrada.bind("<Return>", lambda _evento: confirmar())
+        janela.grab_set()
+        self.wait_window(janela)
+        return resultado["pin"]
+
+    def mostrar(self, nome):
+        tela = self.telas[nome]
+        if hasattr(tela, "ao_mostrar"):
+            tela.ao_mostrar()
+        tela.tkraise()
+
+    def abrir_coletor(self):
+        pin = self.pedir_pin()
+        if pin is None:
+            return
+        if pin == PIN_COLETADOR:
+            self.mostrar("TelaColetor")
+        else:
+            messagebox.showerror("Área do coletador", "PIN incorreto.")
+
+    def exportar_json(self):
+        destino = filedialog.asksaveasfilename(
+            parent=self,
+            title="Salvar cópia dos dados",
+            initialdir=str(ARQUIVO.parent),
+            initialfile=ARQUIVO.name,
+            defaultextension=".json",
+            filetypes=(("Arquivos JSON", "*.json"),),
+        )
+        if not destino:
+            return
+        try:
+            Path(destino).write_text(
+                json.dumps(self.dados, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError as erro:
+            return messagebox.showerror(
+                "Erro ao exportar", f"Não foi possível criar o arquivo JSON:\n{erro}",
+                parent=self)
+        messagebox.showinfo("JSON exportado", f"Arquivo salvo em:\n{destino}", parent=self)
+
+    def gaveta(self, gid):
+        return next(g for g in self.dados["gavetas"] if g["id"] == gid)
+
+    def ocupacao(self):
+        gavetas = self.dados["gavetas"]
+        ocupadas = sum(1 for g in gavetas if g["deposito"])
+        return round(100 * ocupadas / len(gavetas))
+
+
+if __name__ == "__main__":
+    App().mainloop()
