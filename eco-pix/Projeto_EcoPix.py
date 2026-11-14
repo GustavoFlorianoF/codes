@@ -11,6 +11,7 @@ Mais ou menos é assim:
 Esses preços são só exemplo, ainda tem que pesquisar melhor.
 Os dados ficam no arquivo ecopix_dados.json aqui na mesma pasta.
 """
+import base64
 import json
 import re
 import tkinter as tk
@@ -49,6 +50,21 @@ def validar_entrada_digitos(valor, limite):
     return len(valor) <= int(limite) and re.fullmatch(r"[0-9]*", valor) is not None
 
 
+def validar_telefone_parcial(valor):
+    return (len(valor) <= 13 and re.fullmatch(r"[0-9]*", valor) is not None
+            and (len(valor) <= 11 or valor.startswith("55")))
+
+
+def validar_email_parcial(valor):
+    permitidos = r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~@-]*"
+    return (len(valor) <= 77 and valor.count("@") <= 1
+            and re.fullmatch(permitidos, valor) is not None)
+
+
+def validar_cnpj_parcial(valor):
+    return len(valor) <= 14 and re.fullmatch(r"[A-Za-z0-9]*", valor) is not None
+
+
 def validar_chave_aleatoria_parcial(valor):
     return len(valor) <= 36 and re.fullmatch(r"[0-9a-fA-F-]*", valor) is not None
 
@@ -69,9 +85,32 @@ def cpf_valido(cpf):
     return True
 
 
+def cnpj_valido(cnpj):
+    c = re.sub(r"[./-]", "", cnpj).upper()
+    if len(c) != 14 or re.fullmatch(r"[A-Z0-9]{12}[0-9]{2}", c) is None:
+        return False
+    if c == c[0] * 14:
+        return False
+
+    def digito(base, pesos):
+        soma = sum((ord(caractere) - 48) * peso
+                   for caractere, peso in zip(base, pesos))
+        resto = soma % 11
+        return "0" if resto < 2 else str(11 - resto)
+
+    primeiro = digito(c[:12], (5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2))
+    segundo = digito(c[:12] + primeiro, (6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2))
+    return c[-2:] == primeiro + segundo
+
+
 def formatar_cpf(cpf):
     c = so_digitos(cpf)
     return f"{c[:3]}.{c[3:6]}.{c[6:9]}-{c[9:]}"
+
+
+def formatar_cnpj(cnpj):
+    c = re.sub(r"[./-]", "", cnpj).upper()
+    return f"{c[:2]}.{c[2:5]}.{c[5:8]}/{c[8:12]}-{c[12:]}"
 
 
 def mascarar_cpf(cpf):
@@ -83,11 +122,20 @@ def chave_valida(tipo, chave):
     chave = chave.strip()
     if tipo == "CPF":
         return cpf_valido(chave)
+    if tipo == "CNPJ":
+        return cnpj_valido(chave)
     if tipo == "Telefone":
         d = so_digitos(chave)
         if d.startswith("55") and len(d) > 11:
             d = d[2:]
         return len(d) in (10, 11)
+    if tipo == "E-mail":
+        return (len(chave) <= 77 and re.fullmatch(
+            r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@"
+            r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+            r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+",
+            chave,
+        ) is not None)
     return bool(re.fullmatch(r"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", chave))
 
 
@@ -95,6 +143,8 @@ def normalizar_chave(tipo, chave):
     chave = chave.strip()
     if tipo == "CPF":
         return formatar_cpf(chave)
+    if tipo == "CNPJ":
+        return formatar_cnpj(chave)
     if tipo == "Telefone":
         return so_digitos(chave)
     return chave.lower()
@@ -103,9 +153,111 @@ def normalizar_chave(tipo, chave):
 def mascarar_chave(tipo, chave):
     if tipo == "CPF":
         return mascarar_cpf(chave)
+    if tipo == "CNPJ":
+        return chave[:4] + "..." + chave[-4:]
     if tipo == "Telefone":
         return "(**) *****-" + so_digitos(chave)[-4:]
     return chave[:4] + "..." + chave[-4:]
+
+
+def calcular_crc_pix(conteudo):
+    crc = 0xFFFF
+    for byte in conteudo.encode("ascii"):
+        crc ^= byte << 8
+        for _ in range(8):
+            if crc & 0x8000:
+                crc = (crc << 1) ^ 0x1021
+            else:
+                crc <<= 1
+            crc &= 0xFFFF
+    return crc
+
+
+def campos_tlv_pix(conteudo):
+    campos = []
+    vistos = set()
+    posicao = 0
+    while posicao < len(conteudo):
+        if posicao + 4 > len(conteudo):
+            raise ValueError("QR Pix incompleto ou inválido.")
+        identificador = conteudo[posicao:posicao + 2]
+        tamanho = conteudo[posicao + 2:posicao + 4]
+        if not identificador.isdigit() or not tamanho.isdigit():
+            raise ValueError("QR Pix incompleto ou inválido.")
+        if identificador in vistos:
+            raise ValueError("QR Pix contém campos repetidos.")
+        vistos.add(identificador)
+        inicio_valor = posicao + 4
+        fim_valor = inicio_valor + int(tamanho)
+        if fim_valor > len(conteudo):
+            raise ValueError("QR Pix incompleto ou inválido.")
+        campos.append((identificador, conteudo[inicio_valor:fim_valor], inicio_valor))
+        posicao = fim_valor
+    return campos
+
+
+def extrair_chave_pix(payload):
+    try:
+        payload.encode("ascii")
+    except UnicodeEncodeError as erro:
+        raise ValueError("O QR não está em um formato Pix reconhecido.") from erro
+
+    campos = campos_tlv_pix(payload)
+    if not campos or campos[0][:2] != ("00", "01"):
+        raise ValueError("O QR não parece ser um QR Pix válido.")
+    if campos[-1][0] != "63" or len(campos[-1][1]) != 4:
+        raise ValueError("O QR Pix não tem um código de verificação válido.")
+    crc_calculado = f"{calcular_crc_pix(payload[:campos[-1][2]]):04X}"
+    if campos[-1][1].upper() != crc_calculado:
+        raise ValueError("A verificação do QR Pix falhou.")
+
+    dados = {identificador: valor for identificador, valor, _ in campos}
+    chaves_pix = []
+    tem_qr_dinamico = dados.get("01") == "12"
+    for identificador, valor, _ in campos:
+        if not identificador.isdigit() or not 26 <= int(identificador) <= 51:
+            continue
+        subcampos = campos_tlv_pix(valor)
+        subdados = {subidentificador: subvalor
+                    for subidentificador, subvalor, _ in subcampos}
+        if subdados.get("00") != "br.gov.bcb.pix":
+            continue
+        if "25" in subdados:
+            tem_qr_dinamico = True
+        if subdados.get("01"):
+            chaves_pix.append(subdados["01"])
+
+    if tem_qr_dinamico:
+        raise ValueError(
+            "Esse QR Pix é dinâmico e não traz a chave diretamente. "
+            "Use o QR estático de recebimento."
+        )
+    if not chaves_pix:
+        raise ValueError("Não encontrei uma chave em um QR Pix estático.")
+    if len(chaves_pix) > 1:
+        raise ValueError("O QR Pix contém mais de uma chave e não pode ser preenchido.")
+    return chaves_pix[0]
+
+
+def identificar_tipo_chave_pix(chave):
+    chave = chave.strip()
+    if chave_valida("E-mail", chave):
+        return "E-mail", chave
+    if cnpj_valido(chave):
+        return "CNPJ", re.sub(r"[./-]", "", chave).upper()
+
+    digitos = so_digitos(chave)
+    if len(digitos) == 11 and cpf_valido(digitos):
+        return "CPF", digitos
+    if len(digitos) == 14 and cnpj_valido(digitos):
+        return "CNPJ", digitos
+    if chave_valida("Telefone", chave):
+        return "Telefone", digitos
+    if chave_valida("Aleatória", chave):
+        return "Aleatória", chave.lower()
+    raise ValueError(
+        "A chave deste QR não é um CPF, CNPJ, telefone, e-mail ou chave aleatória válida."
+    )
 
 
 def brl(valor):
@@ -193,9 +345,11 @@ class TelaInicio(TelaBase):
 
 
 class TelaCadastro(TelaBase):
-    TIPOS = ("Aleatória", "Telefone", "CPF")
+    TIPOS = ("CPF", "CNPJ", "Telefone", "E-mail", "Aleatória")
     DICAS = {
-        "Aleatória": "Cole a chave aleatória (ex.: 123e4567-e89b-12d3-a456-426614174000)",
+        "Aleatória": "Digite a chave aleatória (ex.: 123e4567-e89b-12d3-a456-426614174000)",
+        "CNPJ": "Digite os 14 caracteres do CNPJ da chave, sem pontos ou barras.",
+        "E-mail": "Digite o e-mail cadastrado como chave Pix.",
         "Telefone": "Digite só os números do telefone com DDD (ex.: 48999999999)",
         "CPF": "Digite os 11 números do CPF da chave, sem ponto ou traço. "
                "Pode ser de outra pessoa.",
@@ -205,7 +359,7 @@ class TelaCadastro(TelaBase):
         super().__init__(pai, app)
         self.v_nome = tk.StringVar()
         self.v_cpf = tk.StringVar()
-        self.v_tipo = tk.StringVar(value="Aleatória")
+        self.v_tipo = tk.StringVar(value="Telefone")
         self.v_chave = tk.StringVar()
         self.v_aceite = tk.BooleanVar()
         self.v_teste = tk.BooleanVar(value=False)
@@ -249,8 +403,13 @@ class TelaCadastro(TelaBase):
         self.entrada_chave = campo(3, "Chave Pix", self.v_chave)
         app.registrar_campo(self.entrada_chave, "chave", 36)
         self._validar_digitos = self.register(validar_entrada_digitos)
+        self._validar_telefone = self.register(validar_telefone_parcial)
+        self._validar_email = self.register(validar_email_parcial)
+        self._validar_cnpj = self.register(validar_cnpj_parcial)
         self._validar_aleatoria = self.register(validar_chave_aleatoria_parcial)
-        self.lbl_dica = texto(conteudo, self.DICAS["Aleatória"], 10)
+        ttk.Button(form, text="LER QR PIX", command=self.ler_qr_pix).grid(
+            row=3, column=2, padx=10)
+        self.lbl_dica = texto(conteudo, self.DICAS["Telefone"], 10)
         self.lbl_dica.pack()
 
         def atualizar_dica(*_):
@@ -261,6 +420,21 @@ class TelaCadastro(TelaBase):
                     validatecommand=(self._validar_aleatoria, "%P"))
                 app.registrar_campo(self.entrada_chave, "chave", 36)
                 entrada_valida = validar_chave_aleatoria_parcial(self.v_chave.get())
+            elif tipo == "E-mail":
+                self.entrada_chave.configure(
+                    validatecommand=(self._validar_email, "%P"))
+                app.registrar_campo(self.entrada_chave, "email", 77)
+                entrada_valida = validar_email_parcial(self.v_chave.get())
+            elif tipo == "CNPJ":
+                self.entrada_chave.configure(
+                    validatecommand=(self._validar_cnpj, "%P"))
+                app.registrar_campo(self.entrada_chave, "cnpj", 14)
+                entrada_valida = validar_cnpj_parcial(self.v_chave.get())
+            elif tipo == "Telefone":
+                self.entrada_chave.configure(
+                    validatecommand=(self._validar_telefone, "%P"))
+                app.registrar_campo(self.entrada_chave, "numero", 13)
+                entrada_valida = validar_telefone_parcial(self.v_chave.get())
             else:
                 self.entrada_chave.configure(
                     validatecommand=(self._validar_digitos, "%P", 11))
@@ -274,6 +448,7 @@ class TelaCadastro(TelaBase):
             validatecommand=(self._validar_aleatoria, "%P"),
         )
         self.v_tipo.trace_add("write", atualizar_dica)
+        atualizar_dica()
 
         tk.Checkbutton(conteudo, variable=self.v_teste, bg=COR_FUNDO, fg=COR_TEXTO,
                        selectcolor=COR_CARD, activebackground=COR_FUNDO,
@@ -301,10 +476,116 @@ class TelaCadastro(TelaBase):
         self.v_nome.set("")
         self.v_cpf.set("")
         self.v_chave.set("")
-        self.v_tipo.set("Aleatória")
+        self.v_tipo.set("Telefone")
         self.v_aceite.set(False)
         self.v_teste.set(False)
         self.entrada_nome.focus_set()
+
+    def ler_qr_pix(self):
+        try:
+            import cv2
+        except ImportError:
+            messagebox.showerror(
+                "Leitura de QR Pix",
+                "Para usar a webcam, instale as dependências do projeto:\n"
+                "python -m pip install -r requirements.txt",
+                parent=self.winfo_toplevel(),
+            )
+            return
+
+        camera = cv2.VideoCapture(0)
+        if not camera.isOpened():
+            camera.release()
+            messagebox.showerror(
+                "Leitura de QR Pix",
+                "Não consegui abrir a webcam. Confira se ela está conectada e liberada.",
+                parent=self.winfo_toplevel(),
+            )
+            return
+        camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+        janela = tk.Toplevel(self)
+        janela.title("Ler QR Code do Pix")
+        janela.configure(bg=COR_FUNDO)
+        janela.transient(self.winfo_toplevel())
+        janela.resizable(False, False)
+        texto(janela, "Aponte a webcam para um QR Pix estático", 14).pack(pady=(12, 6))
+        previa = tk.Label(janela, bg="black")
+        previa.pack(padx=10)
+        estado = tk.Label(
+            janela, text="Aguardando um QR Pix...", bg=COR_FUNDO, fg=COR_TEXTO,
+            font=("Helvetica", 12),
+        )
+        estado.pack(pady=8)
+        ttk.Button(janela, text="Cancelar", command=lambda: fechar()).pack(pady=(0, 10))
+
+        detector = cv2.QRCodeDetector()
+        controle = {"fechada": False, "after": None}
+
+        def fechar():
+            if controle["fechada"]:
+                return
+            controle["fechada"] = True
+            if controle["after"] is not None and janela.winfo_exists():
+                janela.after_cancel(controle["after"])
+            camera.release()
+            if janela.winfo_exists():
+                janela.destroy()
+
+        def ler_frame():
+            controle["after"] = None
+            if controle["fechada"] or not janela.winfo_exists():
+                return
+            sucesso, frame = camera.read()
+            if not sucesso:
+                fechar()
+                messagebox.showerror(
+                    "Leitura de QR Pix", "A webcam parou de enviar imagens.",
+                    parent=self.winfo_toplevel(),
+                )
+                return
+
+            frame = cv2.resize(frame, (640, 480), interpolation=cv2.INTER_AREA)
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            sucesso, imagem = cv2.imencode(".ppm", rgb)
+            if sucesso:
+                foto = tk.PhotoImage(
+                    data=base64.b64encode(imagem.tobytes()).decode("ascii"))
+                previa.configure(image=foto)
+                previa.image = foto
+
+            payload, _, _ = detector.detectAndDecode(frame)
+            if payload:
+                try:
+                    chave = extrair_chave_pix(payload)
+                    tipo, valor = identificar_tipo_chave_pix(chave)
+                except ValueError as erro:
+                    fechar()
+                    messagebox.showwarning(
+                        "QR Pix", str(erro), parent=self.winfo_toplevel())
+                    return
+
+                self.v_tipo.set(tipo)
+                self.v_chave.set(valor)
+                fechar()
+                self.entrada_chave.focus_set()
+                messagebox.showinfo(
+                    "QR Pix", "Chave lida. Confira os dados antes de continuar.",
+                    parent=self.winfo_toplevel(),
+                )
+                return
+
+            controle["after"] = janela.after(30, ler_frame)
+
+        janela.protocol("WM_DELETE_WINDOW", fechar)
+        janela.update_idletasks()
+        janela.geometry(
+            f"+{(janela.winfo_screenwidth() - janela.winfo_reqwidth()) // 2}"
+            f"+{(janela.winfo_screenheight() - janela.winfo_reqheight()) // 2}"
+        )
+        janela.grab_set()
+        ler_frame()
 
     def continuar(self):
         nome = self.v_nome.get().strip()
@@ -925,7 +1206,7 @@ class App(tk.Tk):
             return
 
         if self._teclado_simbolos:
-            for teclas in ("1234567890", "@#$%&*-+'", "áéíóúãõç"):
+            for teclas in ("1234567890", "_@#$%&*-+'", "áéíóúãõç"):
                 faixa = linha()
                 for caractere in teclas:
                     tecla(faixa, caractere, lambda c=caractere: inserir(c))
