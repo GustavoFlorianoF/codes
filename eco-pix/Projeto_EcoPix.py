@@ -683,8 +683,10 @@ class App(tk.Tk):
         self.gaveta_atual = None
         self.estilo()
 
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
         topo = tk.Frame(self, bg=COR_DESTAQUE)
-        topo.pack(fill="x")
+        topo.grid(row=0, column=0, sticky="ew")
         tk.Label(topo, text="ECO-PIX  -  RECICLE E RECEBA", bg=COR_DESTAQUE, fg="white",
                  font=("Helvetica", 20, "bold")).pack(side="left", padx=20, pady=12)
         tk.Label(topo, text="24 HORAS", bg=COR_DESTAQUE, fg="white",
@@ -694,7 +696,7 @@ class App(tk.Tk):
         self.btn_tela_cheia.pack(side="right", padx=10)
 
         container = tk.Frame(self, bg=COR_FUNDO)
-        container.pack(fill="both", expand=True)
+        container.grid(row=1, column=0, sticky="nsew")
         container.grid_rowconfigure(0, weight=1)
         container.grid_columnconfigure(0, weight=1)
         self.telas = {}
@@ -721,14 +723,14 @@ class App(tk.Tk):
                     font=("Helvetica", 17, "bold"), padding=(20, 14))
         s.map("Destaque.TButton", background=[("active", "#FF8A26")])
         s.configure("TCombobox", font=("Helvetica", 16), padding=(10, 10))
-        s.configure("Teclado.TButton", font=("Helvetica", 17, "bold"),
-                    padding=(8, 8), foreground="#263238", background="#F7F9FA")
+        s.configure("Teclado.TButton", font=("Helvetica", 16, "bold"),
+                    padding=(7, 4), foreground="#263238", background="#F7F9FA")
         s.map("Teclado.TButton", background=[("active", "#E0E5EA")])
-        s.configure("TecladoEspecial.TButton", font=("Helvetica", 15, "bold"),
-                    padding=(10, 8), foreground="#263238", background="#C7D0D9")
+        s.configure("TecladoEspecial.TButton", font=("Helvetica", 14, "bold"),
+                    padding=(8, 4), foreground="#263238", background="#C7D0D9")
         s.map("TecladoEspecial.TButton", background=[("active", "#AEBBC7")])
-        s.configure("TecladoEnter.TButton", font=("Helvetica", 15, "bold"),
-                    padding=(10, 8), foreground="white", background=COR_DESTAQUE)
+        s.configure("TecladoEnter.TButton", font=("Helvetica", 14, "bold"),
+                    padding=(8, 4), foreground="white", background=COR_DESTAQUE)
         s.map("TecladoEnter.TButton", background=[("active", "#FF8A26")])
 
     def alternar_tela_cheia(self, _evento=None):
@@ -813,15 +815,20 @@ class App(tk.Tk):
         self._teclado_shift = modo == "texto" and not entrada.get()
         self._teclado_simbolos = False
         self.desenhar_teclado(painel, modo)
-        if not painel.winfo_manager():
+        if host is self:
+            painel.grid(row=2, column=0, sticky="ew")
+        else:
             painel.pack(side="bottom", fill="x")
         painel.lift()
 
     def esconder_teclado(self):
         if not self._teclado_aberto:
             return
-        _, painel = self._teclado_aberto
-        painel.pack_forget()
+        host, painel = self._teclado_aberto
+        if host is self:
+            painel.grid_remove()
+        else:
+            painel.pack_forget()
         self._teclado_aberto = None
         self._entrada_teclado = None
         self._modo_teclado = None
@@ -877,7 +884,7 @@ class App(tk.Tk):
                 pai, text=rotulo, command=comando, style=estilo,
                 width=largura, takefocus=False,
             )
-            botao.pack(side="left", padx=3, pady=3, ipady=5)
+            botao.pack(side="left", padx=3, pady=2, ipady=2)
             return botao
 
         def inserir(caractere):
@@ -918,7 +925,7 @@ class App(tk.Tk):
             return
 
         if self._teclado_simbolos:
-            for teclas in ("1234567890", "@#$%&*-+()", "!?'/;:,."):
+            for teclas in ("1234567890", "@#$%&*-+'", "áéíóúãõç"):
                 faixa = linha()
                 for caractere in teclas:
                     tecla(faixa, caractere, lambda c=caractere: inserir(c))
@@ -936,12 +943,6 @@ class App(tk.Tk):
                 tecla(faixa, rotulo, lambda c=rotulo: inserir(c))
             tecla(faixa, "⌫", self.apagar_tecla,
                   "TecladoEspecial.TButton", 7)
-            faixa = linha()
-            for caractere in "áéíóúãõç":
-                tecla(faixa, caractere.upper() if self._teclado_shift else caractere,
-                      lambda c=caractere.upper() if self._teclado_shift else caractere: inserir(c),
-                      "TecladoEspecial.TButton", 3)
-
         faixa = linha()
         tecla(faixa, "ABC" if self._teclado_simbolos else "?123",
               self.alternar_simbolos, "TecladoEspecial.TButton", 7)
