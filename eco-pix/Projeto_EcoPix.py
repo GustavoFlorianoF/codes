@@ -85,6 +85,10 @@ def cpf_valido(cpf):
     return True
 
 
+def cpf_valido_cadastro(cpf, teste=False):
+    return (teste and so_digitos(cpf) == "00000000000") or cpf_valido(cpf)
+
+
 def cnpj_valido(cnpj):
     c = re.sub(r"[./-]", "", cnpj).upper()
     if len(c) != 14 or re.fullmatch(r"[A-Z0-9]{12}[0-9]{2}", c) is None:
@@ -157,6 +161,9 @@ def mascarar_chave(tipo, chave):
         return chave[:4] + "..." + chave[-4:]
     if tipo == "Telefone":
         return "(**) *****-" + so_digitos(chave)[-4:]
+    if tipo == "E-mail":
+        local, separador, dominio = chave.partition("@")
+        return f"{local[:1]}***@{dominio}" if separador else "***"
     return chave[:4] + "..." + chave[-4:]
 
 
@@ -267,6 +274,214 @@ def brl(valor):
 
 def agora():
     return datetime.now().strftime("%d/%m/%Y %H:%M")
+
+
+def gerar_relatorio_excel(dados, destino):
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.worksheet.table import Table, TableStyleInfo
+    from openpyxl.utils import get_column_letter
+
+    historico = dados.get("historico", [])
+    gavetas = dados.get("gavetas", [])
+
+    def texto_seguro(valor):
+        texto_valor = "" if valor is None else str(valor)
+        if texto_valor.startswith(("=", "+", "-", "@")):
+            return "'" + texto_valor
+        return texto_valor
+
+    def criar_aba(nome, titulo_aba, subtitulo, cabecalhos, linhas, larguras,
+                  formatos=None):
+        planilha = workbook.create_sheet(nome)
+        ultima_coluna = len(cabecalhos)
+        planilha.merge_cells(start_row=1, start_column=1,
+                             end_row=1, end_column=ultima_coluna)
+        planilha["A1"] = titulo_aba
+        planilha["A1"].font = Font(name="Calibri", size=18, bold=True, color="FFFFFF")
+        planilha["A1"].fill = PatternFill("solid", fgColor="263746")
+        planilha["A1"].alignment = Alignment(vertical="center")
+        planilha.row_dimensions[1].height = 32
+
+        planilha.merge_cells(start_row=2, start_column=1,
+                             end_row=2, end_column=ultima_coluna)
+        planilha["A2"] = subtitulo
+        planilha["A2"].font = Font(name="Calibri", size=10, italic=True, color="5B6570")
+        planilha["A2"].alignment = Alignment(vertical="center")
+
+        linha_cabecalho = 4
+        for coluna, cabecalho in enumerate(cabecalhos, start=1):
+            celula = planilha.cell(row=linha_cabecalho, column=coluna, value=cabecalho)
+            celula.font = Font(name="Calibri", bold=True, color="FFFFFF")
+            celula.fill = PatternFill("solid", fgColor=COR_DESTAQUE.lstrip("#"))
+            celula.alignment = Alignment(horizontal="center", vertical="center",
+                                         wrap_text=True)
+            planilha.column_dimensions[get_column_letter(coluna)].width = larguras[coluna - 1]
+        planilha.row_dimensions[linha_cabecalho].height = 30
+
+        for linha in linhas:
+            planilha.append(linha)
+        for linha in planilha.iter_rows(min_row=linha_cabecalho + 1):
+            for celula in linha:
+                celula.font = Font(name="Calibri", size=11, color="263238")
+                celula.alignment = Alignment(vertical="top", wrap_text=True)
+                cabecalho = cabecalhos[celula.column - 1]
+                if formatos and cabecalho in formatos:
+                    celula.number_format = formatos[cabecalho]
+
+        ultima_letra = get_column_letter(ultima_coluna)
+        if linhas:
+            tabela = Table(
+                displayName=f"Tabela{len(workbook.worksheets)}",
+                ref=f"A{linha_cabecalho}:{ultima_letra}{planilha.max_row}",
+            )
+            tabela.tableStyleInfo = TableStyleInfo(
+                name="TableStyleMedium2", showFirstColumn=False,
+                showLastColumn=False, showRowStripes=True, showColumnStripes=False,
+            )
+            planilha.add_table(tabela)
+        else:
+            planilha.auto_filter.ref = f"A{linha_cabecalho}:{ultima_letra}{linha_cabecalho}"
+        planilha.freeze_panes = f"A{linha_cabecalho + 1}"
+        planilha.sheet_view.showGridLines = False
+        planilha.page_setup.orientation = "landscape"
+        planilha.page_setup.fitToWidth = 1
+        planilha.page_setup.fitToHeight = 0
+        planilha.sheet_properties.pageSetUpPr.fitToPage = True
+        return planilha
+
+    total_peso = sum(float(registro.get("peso_total", 0) or 0)
+                     for registro in historico)
+    total_bruto = sum(float(registro.get("valor_bruto", 0) or 0)
+                      for registro in historico)
+    total_taxa = sum(float(registro.get("taxa", 0) or 0)
+                     for registro in historico)
+    total_pago = sum(float(registro.get("valor_pago", 0) or 0)
+                     for registro in historico)
+    ocupadas = sum(1 for gaveta in gavetas if gaveta.get("deposito"))
+    ocupacao = round(100 * ocupadas / len(gavetas)) if gavetas else 0
+
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    resumo = criar_aba(
+        "Resumo", "Eco-Pix | Relatório", f"Exportado em {agora()}",
+        ("Indicador", "Valor"),
+        [
+            ("Pagamentos registrados", len(historico)),
+            ("Peso total conferido (kg)", total_peso),
+            ("Valor bruto (R$)", total_bruto),
+            ("Taxas (R$)", total_taxa),
+            ("Valor pago (R$)", total_pago),
+            ("Gavetas ocupadas", ocupadas),
+            ("Ocupação atual (%)", ocupacao),
+        ],
+        (34, 24),
+    )
+    for linha in range(5, resumo.max_row + 1):
+        indicador = resumo.cell(linha, 1).value
+        if indicador == "Peso total conferido (kg)":
+            resumo.cell(linha, 2).number_format = "0.00"
+        elif indicador in ("Valor bruto (R$)", "Taxas (R$)", "Valor pago (R$)"):
+            resumo.cell(linha, 2).number_format = '"R$" #,##0.00'
+        elif indicador == "Ocupação atual (%)":
+            resumo.cell(linha, 2).number_format = '0"%"'
+
+    linhas_pagamentos = []
+    linhas_materiais = []
+    formatos_pagamentos = {
+        "Peso total (kg)": "0.00",
+        "Valor bruto (R$)": '"R$" #,##0.00',
+        "Taxa (R$)": '"R$" #,##0.00',
+        "Valor pago (R$)": '"R$" #,##0.00',
+    }
+    for registro in historico:
+        tipo_chave = registro.get("tipo_chave", "")
+        chave = registro.get("chave", "")
+        cpf = registro.get("cpf", "")
+        itens = registro.get("itens", [])
+        itens_resumo = "; ".join(
+            f"{texto_seguro(material)} ({float(peso):.2f} kg)"
+            for material, peso in itens
+        )
+        linhas_pagamentos.append((
+            texto_seguro(registro.get("data_deposito", "")),
+            texto_seguro(registro.get("data_pagamento", "")),
+            registro.get("gaveta", ""),
+            texto_seguro(registro.get("nome", "")),
+            mascarar_cpf(cpf) if cpf else "",
+            texto_seguro(tipo_chave),
+            mascarar_chave(tipo_chave, chave) if chave else "",
+            itens_resumo,
+            float(registro.get("peso_total", 0) or 0),
+            float(registro.get("valor_bruto", 0) or 0),
+            float(registro.get("taxa", 0) or 0),
+            float(registro.get("valor_pago", 0) or 0),
+            "Sim" if registro.get("teste", False) else "Não",
+        ))
+        for material, peso in itens:
+            linhas_materiais.append((
+                texto_seguro(registro.get("data_pagamento", "")),
+                registro.get("gaveta", ""),
+                texto_seguro(material),
+                float(peso),
+                "Sim" if registro.get("teste", False) else "Não",
+            ))
+
+    criar_aba(
+        "Pagamentos", "Histórico de pagamentos", "Uma linha por pagamento concluído",
+        ("Data depósito", "Data pagamento", "Gaveta", "Nome",
+         "CPF (mascarado)", "Tipo da chave", "Chave Pix (mascarada)",
+         "Itens", "Peso total (kg)", "Valor bruto (R$)", "Taxa (R$)",
+         "Valor pago (R$)", "Teste"),
+        linhas_pagamentos,
+        (19, 19, 10, 26, 18, 16, 24, 48, 17, 18, 16, 18, 10),
+        formatos_pagamentos,
+    )
+    criar_aba(
+        "Materiais", "Materiais recebidos", "Uma linha por material conferido",
+        ("Data pagamento", "Gaveta", "Material", "Peso (kg)", "Teste"),
+        linhas_materiais, (19, 10, 30, 14, 10), {"Peso (kg)": "0.00"},
+    )
+
+    linhas_gavetas = []
+    for gaveta in gavetas:
+        deposito = gaveta.get("deposito")
+        tipo_chave = deposito.get("tipo_chave", "") if deposito else ""
+        chave = deposito.get("chave", "") if deposito else ""
+        cpf = deposito.get("cpf", "") if deposito else ""
+        status = "Livre"
+        if deposito:
+            status = {"aberta": "Aberta", "bloqueada": "Aguardando coleta"}.get(
+                deposito.get("status"), "Em uso")
+        linhas_gavetas.append((
+            gaveta.get("id", ""),
+            float(gaveta.get("capacidade", 0) or 0),
+            status,
+            texto_seguro(deposito.get("nome", "")) if deposito else "",
+            mascarar_cpf(cpf) if cpf else "",
+            texto_seguro(tipo_chave),
+            mascarar_chave(tipo_chave, chave) if chave else "",
+            texto_seguro(deposito.get("data", "")) if deposito else "",
+            "Sim" if deposito and deposito.get("teste", False) else "Não",
+        ))
+    criar_aba(
+        "Gavetas", "Situação das gavetas", "Estado atual do ponto de coleta",
+        ("Gaveta", "Capacidade (kg)", "Status", "Nome",
+         "CPF (mascarado)", "Tipo da chave", "Chave Pix (mascarada)",
+         "Data depósito", "Teste"),
+        linhas_gavetas, (10, 18, 22, 26, 18, 16, 24, 19, 10),
+        {"Capacidade (kg)": "0.00"},
+    )
+    criar_aba(
+        "Preços", "Preços cadastrados", "Valores atuais; não alteram pagamentos anteriores",
+        ("Material", "Preço atual (R$/kg)"),
+        [(texto_seguro(material), preco) for material, preco in PRECOS.items()],
+        (32, 24), {"Preço atual (R$/kg)": '"R$" #,##0.00'},
+    )
+
+    workbook.properties.title = "Relatório Eco-Pix"
+    workbook.properties.subject = "Pagamentos, materiais, gavetas e preços"
+    workbook.save(destino)
 
 
 # ----------------------------------------------------------------- dados que o programa usa
@@ -454,7 +669,8 @@ class TelaCadastro(TelaBase):
                        selectcolor=COR_CARD, activebackground=COR_FUNDO,
                        activeforeground=COR_TEXTO, font=("Helvetica", 14),
                        height=2, padx=12, anchor="w",
-                       text="Marcar como cadastro de teste (pode ser apagado depois)."
+                       text="Marcar como cadastro de teste (use CPF 00000000000; "
+                            "pode apagar depois)."
                        ).pack(fill="x", pady=(12, 2))
 
         tk.Checkbutton(conteudo, variable=self.v_aceite, bg=COR_FUNDO, fg=COR_TEXTO,
@@ -595,8 +811,12 @@ class TelaCadastro(TelaBase):
 
         if len(nome) < 3:
             return messagebox.showwarning("Cadastro", "Informe seu nome completo.")
-        if not cpf_valido(cpf):
-            return messagebox.showwarning("Cadastro", "CPF inválido. Confira os números.")
+        if not cpf_valido_cadastro(cpf, self.v_teste.get()):
+            return messagebox.showwarning(
+                "Cadastro",
+                "CPF inválido. Confira os dígitos ou, para teste, use 00000000000 "
+                "e marque o cadastro como teste.",
+            )
         if not chave_valida(tipo, chave):
             return messagebox.showwarning(
                 "Cadastro", f"Chave Pix inválida para o tipo '{tipo}'.\n{self.DICAS[tipo]}")
@@ -761,6 +981,8 @@ class TelaColetor(TelaBase):
         acoes.pack(pady=5)
         ttk.Button(acoes, text="Baixar JSON",
                    command=app.exportar_json).pack(side="left", padx=5)
+        ttk.Button(acoes, text="Baixar Excel",
+                   command=app.exportar_excel).pack(side="left", padx=5)
         ttk.Button(acoes, text="Resetar gavetas",
                    command=self.resetar_gavetas).pack(side="left", padx=5)
         ttk.Button(acoes, text="Apagar cadastros de teste",
@@ -1327,6 +1549,34 @@ class App(tk.Tk):
                 "Erro ao exportar", f"Não foi possível criar o arquivo JSON:\n{erro}",
                 parent=self)
         messagebox.showinfo("JSON exportado", f"Arquivo salvo em:\n{destino}", parent=self)
+
+    def exportar_excel(self):
+        destino = filedialog.asksaveasfilename(
+            parent=self,
+            title="Salvar relatório Excel",
+            initialdir=str(ARQUIVO.parent),
+            initialfile="ecopix_relatorio.xlsx",
+            defaultextension=".xlsx",
+            filetypes=(("Planilha Excel", "*.xlsx"),),
+        )
+        if not destino:
+            return
+        try:
+            gerar_relatorio_excel(self.dados, Path(destino))
+        except ImportError:
+            return messagebox.showerror(
+                "Erro ao exportar",
+                "A biblioteca do Excel não está instalada.\n"
+                "Rode: python -m pip install -r requirements.txt",
+                parent=self,
+            )
+        except OSError as erro:
+            return messagebox.showerror(
+                "Erro ao exportar", f"Não foi possível criar o arquivo Excel:\n{erro}",
+                parent=self,
+            )
+        messagebox.showinfo(
+            "Excel exportado", f"Relatório salvo em:\n{destino}", parent=self)
 
     def gaveta(self, gid):
         return next(g for g in self.dados["gavetas"] if g["id"] == gid)
