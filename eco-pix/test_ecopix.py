@@ -108,5 +108,24 @@ class ChavePixTests(unittest.TestCase):
             self.assertEqual(workbook["Resumo"]["B9"].value, 55.8)
 
 
+class PrecosTests(unittest.TestCase):
+    def test_uses_local_prices_and_displays_no_break_range(self):
+            self.assertEqual(ecopix.PRECOS["Placa verde leve"]["preco"], 35.00)
+            self.assertEqual(ecopix.PRECOS["Memória"]["preco"], 200.00)
+            self.assertEqual(ecopix.PRECOS["Notebook montado"]["unidade"], "unidade")
+            self.assertEqual(
+                ecopix.exibicao_preco("No-break"),
+                "R$ 10,00 a R$ 30,00 / unidade",
+            )
+
+    def test_totals_separate_weight_from_item_count(self):
+            itens = [
+                ("Placa-mãe (a varrer)", 1.5, 25.00),
+                ("Monitor", 2, 5.00),
+                ("No-break", 1, 20.00),
+            ]
+            self.assertEqual(ecopix.calcular_totais_itens(itens), (1.5, 67.5))
+
+
 if __name__ == "__main__":
     unittest.main()

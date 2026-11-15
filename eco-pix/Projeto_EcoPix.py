@@ -8,7 +8,7 @@ Mais ou menos é assim:
   4. O coletador entra com PIN, tira o material, pesa e confere. Aí sim
      aparece o pagamento (é só uma simulação por enquanto).
 
-Esses preços são só exemplo, ainda tem que pesquisar melhor.
+Os preços são os valores informados para a cidade atual.
 Os dados ficam no arquivo ecopix_dados.json aqui na mesma pasta.
 """
 import base64
@@ -23,14 +23,26 @@ ARQUIVO = Path(__file__).with_name("ecopix_dados.json")
 TAXA = 0.10  # 10% fica pro projeto, mas esse valor ainda tem que ser confirmado
 PIN_COLETADOR = "123"
 
-# preços de exemplo por kg, depois tem que trocar pelos valores pesquisados
+# Preços locais informados; no-break varia conforme o tamanho.
 PRECOS = {
-    "Placas eletrônicas": 25.00,
-    "Celulares": 12.00,
-    "Notebooks": 6.00,
-    "Cabos e fios": 4.00,
-    "Pilhas e baterias": 3.00,
-    "Eletrônicos pequenos": 1.50,
+    "Placa-mãe (a varrer)": {"preco": 25.00, "unidade": "kg"},
+    "Placa marrom": {"preco": 7.00, "unidade": "kg"},
+    "Placa verde pesada": {"preco": 15.00, "unidade": "kg"},
+    "Placa verde leve": {"preco": 35.00, "unidade": "kg"},
+    "HD": {"preco": 15.00, "unidade": "kg"},
+    "Memória": {"preco": 200.00, "unidade": "kg"},
+    "Processador": {"preco": 90.00, "unidade": "kg"},
+    "Placa de vídeo": {"preco": 40.00, "unidade": "kg"},
+    "Notebook montado": {"preco": 15.00, "unidade": "unidade"},
+    "CPU montada": {"preco": 15.00, "unidade": "unidade"},
+    "Monitor": {"preco": 5.00, "unidade": "unidade"},
+    "Televisão": {"preco": 5.00, "unidade": "unidade"},
+    "Estabilizador": {"preco": 5.00, "unidade": "unidade"},
+    "No-break": {
+        "preco_minimo": 10.00, "preco_maximo": 30.00, "unidade": "unidade",
+    },
+    "Cooler de processador": {"preco": 6.00, "unidade": "kg"},
+    "Bateria de no-break": {"preco": 3.50, "unidade": "kg"},
 }
 
 COR_FUNDO = "#2F3A45"
@@ -272,6 +284,22 @@ def brl(valor):
     return "R$ " + s.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+def exibicao_preco(material):
+    preco = PRECOS[material]
+    unidade = preco["unidade"]
+    if "preco" in preco:
+        return f"{brl(preco['preco'])} / {unidade}"
+    return (f"{brl(preco['preco_minimo'])} a "
+            f"{brl(preco['preco_maximo'])} / {unidade}")
+
+
+def calcular_totais_itens(itens):
+    peso = sum(quantidade for material, quantidade, _ in itens
+               if PRECOS[material]["unidade"] == "kg")
+    bruto = sum(quantidade * preco for _, quantidade, preco in itens)
+    return round(peso, 2), round(bruto, 2)
+
+
 def agora():
     return datetime.now().strftime("%d/%m/%Y %H:%M")
 
@@ -399,10 +427,18 @@ def gerar_relatorio_excel(dados, destino):
         chave = registro.get("chave", "")
         cpf = registro.get("cpf", "")
         itens = registro.get("itens", [])
-        itens_resumo = "; ".join(
-            f"{texto_seguro(material)} ({float(peso):.2f} kg)"
-            for material, peso in itens
-        )
+        itens_resumo_partes = []
+        for item in itens:
+            material, quantidade = item[:2]
+            unidade = item[3] if len(item) > 3 else "kg"
+            quantidade_formatada = (
+                f"{float(quantidade):.2f}" if unidade == "kg"
+                else f"{float(quantidade):g}"
+            )
+            itens_resumo_partes.append(
+                f"{texto_seguro(material)} ({quantidade_formatada} {unidade})"
+            )
+        itens_resumo = "; ".join(itens_resumo_partes)
         linhas_pagamentos.append((
             texto_seguro(registro.get("data_deposito", "")),
             texto_seguro(registro.get("data_pagamento", "")),
@@ -418,12 +454,15 @@ def gerar_relatorio_excel(dados, destino):
             float(registro.get("valor_pago", 0) or 0),
             "Sim" if registro.get("teste", False) else "Não",
         ))
-        for material, peso in itens:
+        for item in itens:
+            material, quantidade = item[:2]
+            unidade = item[3] if len(item) > 3 else "kg"
             linhas_materiais.append((
                 texto_seguro(registro.get("data_pagamento", "")),
                 registro.get("gaveta", ""),
                 texto_seguro(material),
-                float(peso),
+                float(quantidade),
+                unidade,
                 "Sim" if registro.get("teste", False) else "Não",
             ))
 
@@ -439,8 +478,8 @@ def gerar_relatorio_excel(dados, destino):
     )
     criar_aba(
         "Materiais", "Materiais recebidos", "Uma linha por material conferido",
-        ("Data pagamento", "Gaveta", "Material", "Peso (kg)", "Teste"),
-        linhas_materiais, (19, 10, 30, 14, 10), {"Peso (kg)": "0.00"},
+        ("Data pagamento", "Gaveta", "Material", "Quantidade", "Unidade", "Teste"),
+        linhas_materiais, (19, 10, 30, 14, 14, 10), {"Quantidade": "0.00"},
     )
 
     linhas_gavetas = []
@@ -474,9 +513,19 @@ def gerar_relatorio_excel(dados, destino):
     )
     criar_aba(
         "Preços", "Preços cadastrados", "Valores atuais; não alteram pagamentos anteriores",
-        ("Material", "Preço atual (R$/kg)"),
-        [(texto_seguro(material), preco) for material, preco in PRECOS.items()],
-        (32, 24), {"Preço atual (R$/kg)": '"R$" #,##0.00'},
+        ("Material", "Unidade", "Preço mínimo (R$)", "Preço máximo (R$)"),
+        [
+            (
+                texto_seguro(material),
+                preco["unidade"],
+                preco.get("preco", preco.get("preco_minimo")),
+                preco.get("preco", preco.get("preco_maximo")),
+            )
+            for material, preco in PRECOS.items()
+        ],
+        (32, 16, 20, 20),
+        {"Preço mínimo (R$)": '"R$" #,##0.00',
+         "Preço máximo (R$)": '"R$" #,##0.00'},
     )
 
     workbook.properties.title = "Relatório Eco-Pix"
@@ -532,16 +581,16 @@ class TelaInicio(TelaBase):
     def __init__(self, pai, app):
         super().__init__(pai, app)
         titulo(self, "Descarte seu lixo eletrônico\ne receba por isso").pack(pady=(26, 6))
-        texto(self, "Veja quanto você pode ganhar (valor médio por kg):", 13).pack()
+        texto(self, "Veja quanto você pode ganhar por kg ou por unidade:", 13).pack()
 
         tabela = ttk.Treeview(self, columns=("material", "preco"), show="headings",
                               height=len(PRECOS), selectmode="none")
         tabela.heading("material", text="Material")
-        tabela.heading("preco", text="Valor médio por kg")
-        tabela.column("material", width=300)
-        tabela.column("preco", width=170, anchor="center")
-        for material, preco in PRECOS.items():
-            tabela.insert("", "end", values=(material, brl(preco)))
+        tabela.heading("preco", text="Preço")
+        tabela.column("material", width=260)
+        tabela.column("preco", width=220, anchor="center")
+        for material in PRECOS:
+            tabela.insert("", "end", values=(material, exibicao_preco(material)))
         tabela.pack(pady=14)
 
         texto(self, "O valor cai no seu Pix somente depois que o coletador retirar,\n"
@@ -916,7 +965,7 @@ class TelaDeposito(TelaBase):
 class TelaColetor(TelaBase):
     def __init__(self, pai, app):
         super().__init__(pai, app)
-        self.itens = []  # aqui vai ficando o material e o peso que foi colocado
+        self.itens = []
         self.gaveta_sel = None
 
         titulo(self, "Área do coletador", 20).pack(pady=(12, 6))
@@ -939,7 +988,7 @@ class TelaColetor(TelaBase):
         self.lbl_ocup = texto(esq, "", 11, "left")
         self.lbl_ocup.pack(anchor="w")
 
-        # lado direito, onde coloca os pesos e confere tudo
+        # lado direito, onde registra as quantidades e confere os materiais
         dire = tk.Frame(corpo, bg=COR_FUNDO)
         dire.pack(side="right", fill="both", expand=True, padx=(16, 0))
         self.lbl_sel = texto(dire, "", 12, "left")
@@ -948,24 +997,37 @@ class TelaColetor(TelaBase):
         linha = tk.Frame(dire, bg=COR_FUNDO)
         linha.pack(anchor="w", pady=6)
         self.v_mat = tk.StringVar(value=list(PRECOS)[0])
-        ttk.Combobox(linha, textvariable=self.v_mat, values=list(PRECOS),
-                     state="readonly", width=20).pack(side="left")
-        self.v_peso = tk.StringVar()
-        self.entrada_peso = tk.Entry(linha, textvariable=self.v_peso, width=8,
-                                     font=("Helvetica", 16))
-        self.entrada_peso.configure(
+        combo_material = ttk.Combobox(
+            linha, textvariable=self.v_mat, values=list(PRECOS),
+            state="readonly", width=20)
+        combo_material.pack(side="left")
+        combo_material.bind("<<ComboboxSelected>>", self.atualizar_campos_material)
+        self.v_quantidade = tk.StringVar()
+        self.entrada_quantidade = tk.Entry(
+            linha, textvariable=self.v_quantidade, width=8,
+            font=("Helvetica", 16))
+        self.entrada_quantidade.configure(
             validate="key",
             validatecommand=(self.register(validar_peso_parcial), "%P", 8),
         )
-        self.entrada_peso.pack(side="left", padx=6)
-        texto(linha, "kg", 14).pack(side="left")
-        app.registrar_campo(self.entrada_peso, "peso", 8)
+        self.entrada_quantidade.pack(side="left", padx=6)
+        self.v_unidade = tk.StringVar()
+        ttk.Label(linha, textvariable=self.v_unidade).pack(side="left")
+        self.v_preco = tk.StringVar()
+        ttk.Label(linha, text="R$/un.:").pack(side="left", padx=(6, 2))
+        self.entrada_preco = tk.Entry(
+            linha, textvariable=self.v_preco, width=7, font=("Helvetica", 14))
+        self.entrada_preco.pack(side="left")
         ttk.Button(linha, text="Adicionar", command=self.adicionar).pack(side="left", padx=8)
+        app.registrar_campo(self.entrada_quantidade, "peso", 8)
+        self.atualizar_campos_material()
 
-        self.tab_i = ttk.Treeview(dire, columns=("m", "kg", "p", "s"), show="headings",
-                                  height=6, selectmode="browse")
-        for col, tit, larg in (("m", "Material", 130), ("kg", "Peso", 55),
-                               ("p", "R$/kg", 70), ("s", "Subtotal", 85)):
+        self.tab_i = ttk.Treeview(
+            dire, columns=("m", "q", "u", "p", "s"), show="headings",
+            height=6, selectmode="browse")
+        for col, tit, larg in (("m", "Material", 125), ("q", "Qtd.", 55),
+                               ("u", "Un.", 55), ("p", "Preço", 110),
+                               ("s", "Subtotal", 85)):
             self.tab_i.heading(col, text=tit)
             self.tab_i.column(col, width=larg, anchor="center")
         self.tab_i.pack(fill="x")
@@ -1009,9 +1071,14 @@ class TelaColetor(TelaBase):
 
     def atualizar_itens(self):
         self.tab_i.delete(*self.tab_i.get_children())
-        for i, (mat, kg) in enumerate(self.itens):
+        for i, (mat, quantidade, preco) in enumerate(self.itens):
+            unidade = PRECOS[mat]["unidade"]
+            quantidade_texto = (
+                f"{quantidade:.2f}" if unidade == "kg" else f"{int(quantidade)}"
+            )
             self.tab_i.insert("", "end", iid=str(i), values=(
-                mat, f"{kg:.2f}", brl(PRECOS[mat]), brl(kg * PRECOS[mat])))
+                mat, quantidade_texto, unidade, brl(preco),
+                brl(quantidade * preco)))
         if self.gaveta_sel is None:
             self.lbl_sel.config(text="Selecione uma gaveta na lista")
         else:
@@ -1025,10 +1092,17 @@ class TelaColetor(TelaBase):
                  f"Taxa ({int(TAXA * 100)}%): {brl(taxa)}\nA pagar ao usuário: {brl(liquido)}")
 
     def totais(self):
-        peso = sum(kg for _, kg in self.itens)
-        bruto = sum(kg * PRECOS[m] for m, kg in self.itens)
+        peso, bruto = calcular_totais_itens(self.itens)
         taxa = round(bruto * TAXA, 2)
-        return round(peso, 2), round(bruto, 2), taxa, round(bruto - taxa, 2)
+        return peso, bruto, taxa, round(bruto - taxa, 2)
+
+    def atualizar_campos_material(self, _evento=None):
+        preco = PRECOS[self.v_mat.get()]
+        unidade = preco["unidade"]
+        self.v_unidade.set(unidade)
+        variavel = "preco" not in preco
+        self.entrada_preco.configure(state="normal" if variavel else "disabled")
+        self.v_preco.set("")
 
     # botoes e outras coisas que o coletador faz
     def selecionar(self, _evento=None):
@@ -1042,14 +1116,36 @@ class TelaColetor(TelaBase):
     def adicionar(self):
         if self.gaveta_sel is None:
             return messagebox.showwarning("Coleta", "Selecione uma gaveta primeiro.")
+        material = self.v_mat.get()
+        preco_material = PRECOS[material]
+        unidade = preco_material["unidade"]
         try:
-            kg = float(self.v_peso.get().replace(",", "."))
+            quantidade = float(self.v_quantidade.get().replace(",", "."))
         except ValueError:
-            return messagebox.showwarning("Coleta", "Informe um peso válido (ex.: 1,5).")
-        if kg <= 0:
-            return messagebox.showwarning("Coleta", "O peso deve ser maior que zero.")
-        self.itens.append((self.v_mat.get(), round(kg, 2)))
-        self.v_peso.set("")
+            exemplo = "1,5" if unidade == "kg" else "1"
+            return messagebox.showwarning(
+                "Coleta", f"Informe uma quantidade válida (ex.: {exemplo}).")
+        if quantidade <= 0:
+            return messagebox.showwarning("Coleta", "A quantidade deve ser maior que zero.")
+        if unidade == "unidade" and not quantidade.is_integer():
+            return messagebox.showwarning(
+                "Coleta", "A quantidade de itens deve ser um número inteiro.")
+        quantidade = round(quantidade, 2) if unidade == "kg" else int(quantidade)
+
+        if "preco" in preco_material:
+            preco = preco_material["preco"]
+        else:
+            try:
+                preco = float(self.v_preco.get().replace(",", "."))
+            except ValueError:
+                return messagebox.showwarning(
+                    "Coleta", "Informe o preço do no-break entre R$ 10,00 e R$ 30,00.")
+            if not preco_material["preco_minimo"] <= preco <= preco_material["preco_maximo"]:
+                return messagebox.showwarning(
+                    "Coleta", "O preço do no-break deve ficar entre R$ 10,00 e R$ 30,00.")
+
+        self.itens.append((material, quantidade, preco))
+        self.v_quantidade.set("")
         self.atualizar_itens()
 
     def remover(self):
@@ -1079,7 +1175,10 @@ class TelaColetor(TelaBase):
             "gaveta": g["id"], "nome": dep["nome"], "cpf": dep["cpf"],
             "tipo_chave": dep["tipo_chave"], "chave": dep["chave"],
             "data_deposito": dep["data"], "data_pagamento": agora(),
-            "itens": [[m, kg] for m, kg in self.itens],
+            "itens": [
+                [material, quantidade, preco, PRECOS[material]["unidade"]]
+                for material, quantidade, preco in self.itens
+            ],
             "peso_total": peso, "valor_bruto": bruto, "taxa": taxa, "valor_pago": liquido,
             "teste": dep.get("teste", False),
         })
