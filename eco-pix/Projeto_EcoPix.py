@@ -22,6 +22,7 @@ from tkinter import filedialog, messagebox, ttk
 ARQUIVO = Path(__file__).with_name("ecopix_dados.json")
 TAXA = 0.10  # 10% fica pro projeto, mas esse valor ainda tem que ser confirmado
 PIN_COLETADOR = "123"
+CAPACIDADES_GAVETAS = (10, 10, 10, 20, 20, 20, 50, 50, 50, 100, 100, 100)
 
 # Preços locais informados; no-break varia conforme o tamanho.
 PRECOS = {
@@ -535,18 +536,41 @@ def gerar_relatorio_excel(dados, destino):
 
 # ----------------------------------------------------------------- dados que o programa usa
 def dados_iniciais():
-    # cria 10 gavetas, as capacidades vieram do exemplo do PDF e tem que conferir
-    gavetas = [{"id": i, "capacidade": 10 if i <= 5 else 100, "deposito": None}
-               for i in range(1, 11)]
+    gavetas = [
+        {"id": i, "capacidade": capacidade, "deposito": None}
+        for i, capacidade in enumerate(CAPACIDADES_GAVETAS, start=1)
+    ]
     return {"gavetas": gavetas, "historico": []}
+
+
+def normalizar_gavetas(dados):
+    gavetas = dados["gavetas"]
+    alterado = False
+    for indice, capacidade in enumerate(CAPACIDADES_GAVETAS):
+        if indice < len(gavetas):
+            gaveta = gavetas[indice]
+            if gaveta.get("capacidade") != capacidade:
+                gaveta["capacidade"] = capacidade
+                alterado = True
+        else:
+            gavetas.append({
+                "id": indice + 1,
+                "capacidade": capacidade,
+                "deposito": None,
+            })
+            alterado = True
+    return alterado
 
 
 def carregar():
     if ARQUIVO.exists():
         try:
-            return json.loads(ARQUIVO.read_text(encoding="utf-8"))
+            dados = json.loads(ARQUIVO.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
-            pass
+            return dados_iniciais()
+        if normalizar_gavetas(dados) and not salvar(dados):
+            raise OSError(f"Não foi possível atualizar as gavetas em {ARQUIVO}.")
+        return dados
     return dados_iniciais()
 
 
@@ -1017,9 +1041,14 @@ class TelaColetor(TelaBase):
         ttk.Label(linha, text="R$/un.:").pack(side="left", padx=(6, 2))
         self.entrada_preco = tk.Entry(
             linha, textvariable=self.v_preco, width=7, font=("Helvetica", 14))
+        self.entrada_preco.configure(
+            validate="key",
+            validatecommand=(self.register(validar_peso_parcial), "%P", 8),
+        )
         self.entrada_preco.pack(side="left")
         ttk.Button(linha, text="Adicionar", command=self.adicionar).pack(side="left", padx=8)
         app.registrar_campo(self.entrada_quantidade, "peso", 8)
+        app.registrar_campo(self.entrada_preco, "peso", 8)
         self.atualizar_campos_material()
 
         self.tab_i = ttk.Treeview(

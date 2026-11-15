@@ -1,7 +1,9 @@
 import binascii
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import Projeto_EcoPix as ecopix
 from openpyxl import load_workbook
@@ -125,6 +127,46 @@ class PrecosTests(unittest.TestCase):
                 ("No-break", 1, 20.00),
             ]
             self.assertEqual(ecopix.calcular_totais_itens(itens), (1.5, 67.5))
+
+
+class GavetasTests(unittest.TestCase):
+    def test_initial_drawers_have_three_of_each_capacity(self):
+        gavetas = ecopix.dados_iniciais()["gavetas"]
+        self.assertEqual(
+            [gaveta["capacidade"] for gaveta in gavetas],
+            [10, 10, 10, 20, 20, 20, 50, 50, 50, 100, 100, 100],
+        )
+
+    def test_migrates_saved_drawers_without_losing_deposits_or_history(self):
+        deposito = {"nome": "Pessoa Teste", "status": "bloqueada"}
+        historico = [{"valor_pago": 42.0}]
+        dados_antigos = {
+            "gavetas": [
+                {
+                    "id": indice,
+                    "capacidade": 10 if indice <= 5 else 100,
+                    "deposito": deposito.copy() if indice == 1 else None,
+                }
+                for indice in range(1, 11)
+            ],
+            "historico": historico,
+        }
+
+        with tempfile.TemporaryDirectory() as pasta:
+            arquivo = Path(pasta) / "ecopix_dados.json"
+            arquivo.write_text(json.dumps(dados_antigos), encoding="utf-8")
+            with patch.object(ecopix, "ARQUIVO", arquivo):
+                dados = ecopix.carregar()
+
+            self.assertEqual(len(dados["gavetas"]), 12)
+            self.assertEqual(
+                [gaveta["capacidade"] for gaveta in dados["gavetas"]],
+                [10, 10, 10, 20, 20, 20, 50, 50, 50, 100, 100, 100],
+            )
+            self.assertEqual(dados["gavetas"][0]["deposito"], deposito)
+            self.assertEqual(dados["historico"], historico)
+            dados_salvos = json.loads(arquivo.read_text(encoding="utf-8"))
+            self.assertEqual(len(dados_salvos["gavetas"]), 12)
 
 
 if __name__ == "__main__":
