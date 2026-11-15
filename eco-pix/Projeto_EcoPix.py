@@ -604,18 +604,26 @@ class TelaBase(tk.Frame):
 class TelaInicio(TelaBase):
     def __init__(self, pai, app):
         super().__init__(pai, app)
-        titulo(self, "Descarte seu lixo eletrônico\ne receba por isso").pack(pady=(26, 6))
+        titulo(self, "Descarte seu lixo eletrônico\ne receba por isso").pack(
+            pady=(12, 4))
         texto(self, "Veja quanto você pode ganhar por kg ou por unidade:", 13).pack()
 
-        tabela = ttk.Treeview(self, columns=("material", "preco"), show="headings",
-                              height=len(PRECOS), selectmode="none")
+        quadro_tabela = tk.Frame(self, bg=COR_FUNDO)
+        quadro_tabela.pack(pady=8)
+        tabela = ttk.Treeview(
+            quadro_tabela, columns=("material", "preco"), show="headings",
+            height=5, selectmode="none", style="Inicio.Treeview")
         tabela.heading("material", text="Material")
         tabela.heading("preco", text="Preço")
-        tabela.column("material", width=260)
-        tabela.column("preco", width=220, anchor="center")
+        tabela.column("material", width=240)
+        tabela.column("preco", width=210, anchor="center")
         for material in PRECOS:
             tabela.insert("", "end", values=(material, exibicao_preco(material)))
-        tabela.pack(pady=14)
+        barra_tabela = ttk.Scrollbar(
+            quadro_tabela, orient="vertical", command=tabela.yview)
+        tabela.configure(yscrollcommand=barra_tabela.set)
+        tabela.pack(side="left")
+        barra_tabela.pack(side="right", fill="y")
 
         texto(self, "O valor cai no seu Pix somente depois que o coletador retirar,\n"
                     "pesar e conferir os materiais. Quanto mais você deixar, mais recebe!",
@@ -1348,6 +1356,8 @@ class App(tk.Tk):
                     foreground="white", rowheight=44, font=("Helvetica", 14))
         s.configure("Treeview.Heading", background=COR_DESTAQUE, foreground="white",
                     font=("Helvetica", 14, "bold"))
+        s.configure("Inicio.Treeview", rowheight=30, font=("Helvetica", 11))
+        s.configure("Inicio.Treeview.Heading", font=("Helvetica", 12, "bold"))
         s.map("Treeview", background=[("selected", COR_DESTAQUE)])
         s.configure("TButton", font=("Helvetica", 15), padding=(16, 12))
         s.configure("Destaque.TButton", background=COR_DESTAQUE, foreground="white",
