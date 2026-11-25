@@ -13,18 +13,29 @@ Os dados ficam no arquivo ecopix_dados.json aqui na mesma pasta.
 """
 import base64
 import json
+import os
 import re
+import sys
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-ARQUIVO = Path(__file__).with_name("ecopix_dados.json")
+
+def caminho_dados():
+    if getattr(sys, "frozen", False):
+        pasta_dados = Path(
+            os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+        return pasta_dados / "EcoPix" / "ecopix_dados.json"
+    return Path(__file__).with_name("ecopix_dados.json")
+
+
+ARQUIVO = caminho_dados()
 TAXA = 0.10  # 10% fica pro projeto, mas esse valor ainda tem que ser confirmado
 PIN_COLETADOR = "123"
 CAPACIDADES_GAVETAS = (10, 10, 10, 20, 20, 20, 50, 50, 50, 100, 100, 100)
 
-# Preços locais informados; no-break varia conforme o tamanho.
+# Preços locais informados.
 PRECOS = {
     "Placa-mãe (a varrer)": {"preco": 25.00, "unidade": "kg"},
     "Placa marrom": {"preco": 7.00, "unidade": "kg"},
@@ -39,9 +50,7 @@ PRECOS = {
     "Monitor": {"preco": 5.00, "unidade": "unidade"},
     "Televisão": {"preco": 5.00, "unidade": "unidade"},
     "Estabilizador": {"preco": 5.00, "unidade": "unidade"},
-    "No-break": {
-        "preco_minimo": 10.00, "preco_maximo": 30.00, "unidade": "unidade",
-    },
+    "No-break": {"preco": 10.00, "unidade": "unidade"},
     "Cooler de processador": {"preco": 6.00, "unidade": "kg"},
     "Bateria de no-break": {"preco": 3.50, "unidade": "kg"},
 }
@@ -571,11 +580,15 @@ def carregar():
         if normalizar_gavetas(dados) and not salvar(dados):
             raise OSError(f"Não foi possível atualizar as gavetas em {ARQUIVO}.")
         return dados
-    return dados_iniciais()
+    dados = dados_iniciais()
+    if not salvar(dados):
+        raise OSError(f"Não foi possível criar o arquivo de dados em {ARQUIVO}.")
+    return dados
 
 
 def salvar(dados):
     try:
+        ARQUIVO.parent.mkdir(parents=True, exist_ok=True)
         ARQUIVO.write_text(json.dumps(dados, ensure_ascii=False, indent=2),
                            encoding="utf-8")
     except OSError:
@@ -1031,32 +1044,23 @@ class TelaColetor(TelaBase):
         self.v_mat = tk.StringVar(value=list(PRECOS)[0])
         combo_material = ttk.Combobox(
             linha, textvariable=self.v_mat, values=list(PRECOS),
-            state="readonly", width=20)
+            state="readonly", width=24)
         combo_material.pack(side="left")
         combo_material.bind("<<ComboboxSelected>>", self.atualizar_campos_material)
         self.v_quantidade = tk.StringVar()
         self.entrada_quantidade = tk.Entry(
-            linha, textvariable=self.v_quantidade, width=8,
-            font=("Helvetica", 16))
+            linha, textvariable=self.v_quantidade, width=7,
+            font=("Helvetica", 14))
         self.entrada_quantidade.configure(
             validate="key",
             validatecommand=(self.register(validar_peso_parcial), "%P", 8),
         )
-        self.entrada_quantidade.pack(side="left", padx=6)
+        self.entrada_quantidade.pack(side="left", padx=(8, 4))
         self.v_unidade = tk.StringVar()
         ttk.Label(linha, textvariable=self.v_unidade).pack(side="left")
-        self.v_preco = tk.StringVar()
-        ttk.Label(linha, text="R$/un.:").pack(side="left", padx=(6, 2))
-        self.entrada_preco = tk.Entry(
-            linha, textvariable=self.v_preco, width=7, font=("Helvetica", 14))
-        self.entrada_preco.configure(
-            validate="key",
-            validatecommand=(self.register(validar_peso_parcial), "%P", 8),
-        )
-        self.entrada_preco.pack(side="left")
-        ttk.Button(linha, text="Adicionar", command=self.adicionar).pack(side="left", padx=8)
+        ttk.Button(linha, text="Adicionar item",
+                   command=self.adicionar).pack(side="left", padx=(10, 0))
         app.registrar_campo(self.entrada_quantidade, "peso", 8)
-        app.registrar_campo(self.entrada_preco, "peso", 8)
         self.atualizar_campos_material()
 
         self.tab_i = ttk.Treeview(
@@ -1135,11 +1139,7 @@ class TelaColetor(TelaBase):
 
     def atualizar_campos_material(self, _evento=None):
         preco = PRECOS[self.v_mat.get()]
-        unidade = preco["unidade"]
-        self.v_unidade.set(unidade)
-        variavel = "preco" not in preco
-        self.entrada_preco.configure(state="normal" if variavel else "disabled")
-        self.v_preco.set("")
+        self.v_unidade.set(preco["unidade"])
 
     # botoes e outras coisas que o coletador faz
     def selecionar(self, _evento=None):
@@ -1169,18 +1169,7 @@ class TelaColetor(TelaBase):
                 "Coleta", "A quantidade de itens deve ser um número inteiro.")
         quantidade = round(quantidade, 2) if unidade == "kg" else int(quantidade)
 
-        if "preco" in preco_material:
-            preco = preco_material["preco"]
-        else:
-            try:
-                preco = float(self.v_preco.get().replace(",", "."))
-            except ValueError:
-                return messagebox.showwarning(
-                    "Coleta", "Informe o preço do no-break entre R$ 10,00 e R$ 30,00.")
-            if not preco_material["preco_minimo"] <= preco <= preco_material["preco_maximo"]:
-                return messagebox.showwarning(
-                    "Coleta", "O preço do no-break deve ficar entre R$ 10,00 e R$ 30,00.")
-
+        preco = preco_material["preco"]
         self.itens.append((material, quantidade, preco))
         self.v_quantidade.set("")
         self.atualizar_itens()

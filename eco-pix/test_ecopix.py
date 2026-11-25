@@ -111,22 +111,22 @@ class ChavePixTests(unittest.TestCase):
 
 
 class PrecosTests(unittest.TestCase):
-    def test_uses_local_prices_and_displays_no_break_range(self):
+    def test_uses_local_prices_and_displays_no_break_price(self):
             self.assertEqual(ecopix.PRECOS["Placa verde leve"]["preco"], 35.00)
             self.assertEqual(ecopix.PRECOS["Memória"]["preco"], 200.00)
             self.assertEqual(ecopix.PRECOS["Notebook montado"]["unidade"], "unidade")
             self.assertEqual(
                 ecopix.exibicao_preco("No-break"),
-                "R$ 10,00 a R$ 30,00 / unidade",
+                "R$ 10,00 / unidade",
             )
 
     def test_totals_separate_weight_from_item_count(self):
             itens = [
                 ("Placa-mãe (a varrer)", 1.5, 25.00),
                 ("Monitor", 2, 5.00),
-                ("No-break", 1, 20.00),
+                ("No-break", 1, 10.00),
             ]
-            self.assertEqual(ecopix.calcular_totais_itens(itens), (1.5, 67.5))
+            self.assertEqual(ecopix.calcular_totais_itens(itens), (1.5, 57.5))
 
 
 class GavetasTests(unittest.TestCase):
@@ -167,6 +167,33 @@ class GavetasTests(unittest.TestCase):
             self.assertEqual(dados["historico"], historico)
             dados_salvos = json.loads(arquivo.read_text(encoding="utf-8"))
             self.assertEqual(len(dados_salvos["gavetas"]), 12)
+
+
+class CaminhoDadosTests(unittest.TestCase):
+    def test_packaged_app_uses_user_appdata(self):
+        with tempfile.TemporaryDirectory() as pasta:
+            with patch.object(ecopix.sys, "frozen", True, create=True), \
+                    patch.dict(ecopix.os.environ, {"APPDATA": pasta}):
+                self.assertEqual(
+                    ecopix.caminho_dados(),
+                    Path(pasta) / "EcoPix" / "ecopix_dados.json",
+                )
+
+    def test_first_launch_creates_clean_data_file(self):
+        with tempfile.TemporaryDirectory() as pasta:
+            arquivo = Path(pasta) / "EcoPix" / "ecopix_dados.json"
+            with patch.object(ecopix, "ARQUIVO", arquivo):
+                dados = ecopix.carregar()
+            self.assertEqual(dados, ecopix.dados_iniciais())
+            self.assertTrue(arquivo.exists())
+
+    def test_save_creates_missing_data_directory(self):
+        dados = ecopix.dados_iniciais()
+        with tempfile.TemporaryDirectory() as pasta:
+            arquivo = Path(pasta) / "EcoPix" / "ecopix_dados.json"
+            with patch.object(ecopix, "ARQUIVO", arquivo):
+                self.assertTrue(ecopix.salvar(dados))
+            self.assertEqual(json.loads(arquivo.read_text(encoding="utf-8")), dados)
 
 
 if __name__ == "__main__":
