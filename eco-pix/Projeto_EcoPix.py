@@ -108,7 +108,7 @@ def cpf_valido(cpf):
 
 
 def cpf_valido_cadastro(cpf, teste=False):
-    return (teste and so_digitos(cpf) == "00000000000") or cpf_valido(cpf)
+    return (teste and len(so_digitos(cpf)) == 11) or cpf_valido(cpf)
 
 
 def cnpj_valido(cnpj):
@@ -147,7 +147,7 @@ def mascarar_cpf(cpf):
 def chave_valida(tipo, chave, teste=False):
     chave = chave.strip()
     if tipo == "CPF":
-        return (teste and so_digitos(chave) == "00000000000") or cpf_valido(chave)
+        return (teste and len(so_digitos(chave)) == 11) or cpf_valido(chave)
     if tipo == "CNPJ":
         return cnpj_valido(chave)
     if tipo == "Telefone":
@@ -763,8 +763,8 @@ class TelaCadastro(TelaBase):
                        selectcolor=COR_CARD, activebackground=COR_FUNDO,
                        activeforeground=COR_TEXTO, font=("Helvetica", 14),
                        height=2, padx=12, anchor="w",
-                       text="Marcar como cadastro de teste (permite usar CPF "
-                            "00000000000 no cadastro e como chave Pix; pode apagar depois)."
+                       text="Marcar como cadastro de teste (permite usar qualquer "
+                            "sequência de 11 números no CPF e na chave Pix; pode apagar depois)."
                        ).pack(fill="x", pady=(12, 2))
 
         tk.Checkbutton(conteudo, variable=self.v_aceite, bg=COR_FUNDO, fg=COR_TEXTO,
