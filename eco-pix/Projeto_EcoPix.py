@@ -144,10 +144,10 @@ def mascarar_cpf(cpf):
     return f"***.{c[3:6]}.{c[6:9]}-**"
 
 
-def chave_valida(tipo, chave):
+def chave_valida(tipo, chave, teste=False):
     chave = chave.strip()
     if tipo == "CPF":
-        return cpf_valido(chave)
+        return (teste and so_digitos(chave) == "00000000000") or cpf_valido(chave)
     if tipo == "CNPJ":
         return cnpj_valido(chave)
     if tipo == "Telefone":
@@ -763,8 +763,8 @@ class TelaCadastro(TelaBase):
                        selectcolor=COR_CARD, activebackground=COR_FUNDO,
                        activeforeground=COR_TEXTO, font=("Helvetica", 14),
                        height=2, padx=12, anchor="w",
-                       text="Marcar como cadastro de teste (use CPF 00000000000; "
-                            "pode apagar depois)."
+                       text="Marcar como cadastro de teste (permite usar CPF "
+                            "00000000000 no cadastro e como chave Pix; pode apagar depois)."
                        ).pack(fill="x", pady=(12, 2))
 
         tk.Checkbutton(conteudo, variable=self.v_aceite, bg=COR_FUNDO, fg=COR_TEXTO,
@@ -911,7 +911,7 @@ class TelaCadastro(TelaBase):
                 "CPF inválido. Confira os dígitos ou, para teste, use 00000000000 "
                 "e marque o cadastro como teste.",
             )
-        if not chave_valida(tipo, chave):
+        if not chave_valida(tipo, chave, self.v_teste.get()):
             return messagebox.showwarning(
                 "Cadastro", f"Chave Pix inválida para o tipo '{tipo}'.\n{self.DICAS[tipo]}")
         if not self.v_aceite.get():

@@ -51,6 +51,12 @@ class ChavePixTests(unittest.TestCase):
         self.assertTrue(ecopix.cpf_valido_cadastro(cpf_de_teste, teste=True))
         self.assertFalse(ecopix.cpf_valido_cadastro("12345678901", teste=True))
 
+    def test_reserved_cpf_pix_key_is_allowed_only_for_test_records(self):
+        chave_de_teste = "00000000000"
+        self.assertFalse(ecopix.chave_valida("CPF", chave_de_teste))
+        self.assertTrue(ecopix.chave_valida("CPF", chave_de_teste, teste=True))
+        self.assertFalse(ecopix.chave_valida("CPF", "12345678901", teste=True))
+
     def test_validates_cnpj_numeric_and_alphanumeric(self):
         self.assertTrue(ecopix.cnpj_valido("11.222.333/0001-81"))
         self.assertFalse(ecopix.cnpj_valido("11.222.333/0001-82"))
