@@ -37,6 +37,15 @@ def qr_pix(chave=None, dinamico=False):
     return cabecalho_crc + f"{crc:04X}"
 
 
+def dpapi_de_teste(conteudo, proteger):
+    prefixo = b"eco-pix-test:"
+    if proteger:
+        return prefixo + conteudo
+    if not conteudo.startswith(prefixo):
+        raise ValueError("Conteúdo não protegido pelo teste.")
+    return conteudo[len(prefixo):]
+
+
 class ChavePixTests(unittest.TestCase):
     def test_validates_and_normalizes_email(self):
         email = "alguem+pix@exemplo.com"
@@ -161,8 +170,12 @@ class GavetasTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as pasta:
             arquivo = Path(pasta) / "ecopix_dados.json"
             arquivo.write_text(json.dumps(dados_antigos), encoding="utf-8")
-            with patch.object(ecopix, "ARQUIVO", arquivo):
+            with patch.object(ecopix, "ARQUIVO", arquivo), \
+                    patch.object(ecopix, "_dpapi_transformar",
+                                 side_effect=dpapi_de_teste):
                 dados = ecopix.carregar()
+                conteudo_salvo = arquivo.read_text(encoding="utf-8")
+                dados_reabertos = ecopix.carregar()
 
             self.assertEqual(len(dados["gavetas"]), 12)
             self.assertEqual(
@@ -171,8 +184,26 @@ class GavetasTests(unittest.TestCase):
             )
             self.assertEqual(dados["gavetas"][0]["deposito"], deposito)
             self.assertEqual(dados["historico"], historico)
-            dados_salvos = json.loads(arquivo.read_text(encoding="utf-8"))
-            self.assertEqual(len(dados_salvos["gavetas"]), 12)
+            self.assertEqual(dados_reabertos, dados)
+            self.assertNotIn("Pessoa Teste", conteudo_salvo)
+            self.assertNotIn("historico", json.loads(conteudo_salvo))
+
+    def test_refuses_to_open_protected_data_without_decrypting_it(self):
+        dados = ecopix.dados_iniciais()
+        with tempfile.TemporaryDirectory() as pasta:
+            arquivo = Path(pasta) / "ecopix_dados.json"
+            with patch.object(ecopix, "_dpapi_transformar",
+                              side_effect=dpapi_de_teste):
+                conteudo_protegido = ecopix.serializar_dados_protegidos(dados)
+            arquivo.write_text(conteudo_protegido, encoding="utf-8")
+
+            with patch.object(ecopix, "ARQUIVO", arquivo), \
+                    patch.object(ecopix, "_dpapi_transformar",
+                                 side_effect=ValueError("Não foi possível descriptografar")):
+                with self.assertRaises(ecopix.ErroProtecaoDados):
+                    ecopix.carregar()
+
+            self.assertEqual(arquivo.read_text(encoding="utf-8"), conteudo_protegido)
 
 
 class CaminhoDadosTests(unittest.TestCase):
@@ -188,18 +219,26 @@ class CaminhoDadosTests(unittest.TestCase):
     def test_first_launch_creates_clean_data_file(self):
         with tempfile.TemporaryDirectory() as pasta:
             arquivo = Path(pasta) / "EcoPix" / "ecopix_dados.json"
-            with patch.object(ecopix, "ARQUIVO", arquivo):
+            with patch.object(ecopix, "ARQUIVO", arquivo), \
+                    patch.object(ecopix, "_dpapi_transformar",
+                                 side_effect=dpapi_de_teste):
                 dados = ecopix.carregar()
+                dados_salvos = json.loads(arquivo.read_text(encoding="utf-8"))
             self.assertEqual(dados, ecopix.dados_iniciais())
             self.assertTrue(arquivo.exists())
+            self.assertNotIn("gavetas", dados_salvos)
 
     def test_save_creates_missing_data_directory(self):
         dados = ecopix.dados_iniciais()
         with tempfile.TemporaryDirectory() as pasta:
             arquivo = Path(pasta) / "EcoPix" / "ecopix_dados.json"
-            with patch.object(ecopix, "ARQUIVO", arquivo):
+            with patch.object(ecopix, "ARQUIVO", arquivo), \
+                    patch.object(ecopix, "_dpapi_transformar",
+                                 side_effect=dpapi_de_teste):
                 self.assertTrue(ecopix.salvar(dados))
-            self.assertEqual(json.loads(arquivo.read_text(encoding="utf-8")), dados)
+                self.assertEqual(ecopix.carregar(), dados)
+            self.assertNotIn(
+                "gavetas", json.loads(arquivo.read_text(encoding="utf-8")))
 
 
 if __name__ == "__main__":

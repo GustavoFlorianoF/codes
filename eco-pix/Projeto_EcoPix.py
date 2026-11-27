@@ -10,15 +10,19 @@ Mais ou menos é assim:
 
 Os preços são os valores informados para a cidade atual.
 Os dados ficam no arquivo ecopix_dados.json aqui na mesma pasta.
+Os dados salvos são protegidos pelo Windows para a conta atual.
 """
 import base64
+import ctypes
 import json
 import os
 import re
 import sys
+import tempfile
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
+from ctypes import wintypes
 from tkinter import filedialog, messagebox, ttk
 
 
@@ -544,6 +548,82 @@ def gerar_relatorio_excel(dados, destino):
 
 
 # ----------------------------------------------------------------- dados que o programa usa
+CHAVE_DADOS_PROTEGIDOS = "_eco_pix_protegido"
+VERSAO_DADOS_PROTEGIDOS = "dpapi-v1"
+
+
+class ErroProtecaoDados(OSError):
+    pass
+
+
+def _dpapi_transformar(conteudo, proteger):
+    if os.name != "nt":
+        raise OSError("A proteção dos dados requer o Windows.")
+
+    class DataBlob(ctypes.Structure):
+        _fields_ = [
+            ("cbData", wintypes.DWORD),
+            ("pbData", ctypes.POINTER(ctypes.c_byte)),
+        ]
+
+    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    funcao = (crypt32.CryptProtectData if proteger
+              else crypt32.CryptUnprotectData)
+    funcao.argtypes = [
+        ctypes.POINTER(DataBlob), ctypes.c_void_p, ctypes.c_void_p,
+        ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD,
+        ctypes.POINTER(DataBlob),
+    ]
+    funcao.restype = wintypes.BOOL
+
+    buffer_entrada = ctypes.create_string_buffer(conteudo, len(conteudo))
+    blob_entrada = DataBlob(
+        len(conteudo),
+        ctypes.cast(buffer_entrada, ctypes.POINTER(ctypes.c_byte)),
+    )
+    blob_saida = DataBlob()
+    if not funcao(
+        ctypes.byref(blob_entrada), None, None, None, None, 1,
+        ctypes.byref(blob_saida),
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    try:
+        return ctypes.string_at(blob_saida.pbData, blob_saida.cbData)
+    finally:
+        kernel32.LocalFree(ctypes.cast(blob_saida.pbData, ctypes.c_void_p))
+
+
+def serializar_dados_protegidos(dados):
+    conteudo = json.dumps(dados, ensure_ascii=False, indent=2).encode("utf-8")
+    criptografado = _dpapi_transformar(conteudo, proteger=True)
+    envelope = {
+        CHAVE_DADOS_PROTEGIDOS: VERSAO_DADOS_PROTEGIDOS,
+        "dados": base64.b64encode(criptografado).decode("ascii"),
+    }
+    return json.dumps(envelope, ensure_ascii=False, indent=2)
+
+
+def desserializar_dados_protegidos(conteudo):
+    envelope = json.loads(conteudo)
+    if (not isinstance(envelope, dict)
+            or envelope.get(CHAVE_DADOS_PROTEGIDOS) != VERSAO_DADOS_PROTEGIDOS):
+        return envelope, False
+
+    try:
+        criptografado = base64.b64decode(envelope["dados"], validate=True)
+        conteudo_original = _dpapi_transformar(criptografado, proteger=False)
+        return json.loads(conteudo_original.decode("utf-8")), True
+    except (OSError, ValueError, UnicodeError, KeyError, TypeError) as erro:
+        raise ErroProtecaoDados(
+            "Não foi possível abrir os dados protegidos. Use a mesma conta do "
+            "Windows em que eles foram salvos. O arquivo original foi mantido."
+        ) from erro
+
+
 def dados_iniciais():
     gavetas = [
         {"id": i, "capacidade": capacidade, "deposito": None}
@@ -574,11 +654,17 @@ def normalizar_gavetas(dados):
 def carregar():
     if ARQUIVO.exists():
         try:
-            dados = json.loads(ARQUIVO.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+            conteudo = ARQUIVO.read_text(encoding="utf-8")
+        except OSError:
             return dados_iniciais()
-        if normalizar_gavetas(dados) and not salvar(dados):
-            raise OSError(f"Não foi possível atualizar as gavetas em {ARQUIVO}.")
+        try:
+            dados, protegido = desserializar_dados_protegidos(conteudo)
+        except json.JSONDecodeError:
+            return dados_iniciais()
+        gavetas_alteradas = normalizar_gavetas(dados)
+        if not protegido or gavetas_alteradas:
+            if not salvar(dados):
+                raise OSError(f"Não foi possível proteger os dados em {ARQUIVO}.")
         return dados
     dados = dados_iniciais()
     if not salvar(dados):
@@ -589,8 +675,13 @@ def carregar():
 def salvar(dados):
     try:
         ARQUIVO.parent.mkdir(parents=True, exist_ok=True)
-        ARQUIVO.write_text(json.dumps(dados, ensure_ascii=False, indent=2),
-                           encoding="utf-8")
+        conteudo = serializar_dados_protegidos(dados)
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=ARQUIVO.parent, delete=False,
+        ) as arquivo_temporario:
+            arquivo_temporario.write(conteudo)
+            caminho_temporario = Path(arquivo_temporario.name)
+        os.replace(caminho_temporario, ARQUIVO)
     except OSError:
         return False
     return True
@@ -1303,7 +1394,12 @@ class App(tk.Tk):
         self.bind("<F11>", self.alternar_tela_cheia)
         self.bind_all("<Button-1>", self.clique_global, add="+")
 
-        self.dados = carregar()
+        try:
+            self.dados = carregar()
+        except ErroProtecaoDados as erro:
+            messagebox.showerror("Dados protegidos", str(erro), parent=self)
+            self.destroy()
+            raise SystemExit(1)
         for g in self.dados["gavetas"]:  # se fechou o programa com gaveta aberta, libera ela aqui
             if g["deposito"] and g["deposito"].get("status") == "aberta":
                 g["deposito"] = None
@@ -1668,14 +1764,19 @@ class App(tk.Tk):
             return
         try:
             Path(destino).write_text(
-                json.dumps(self.dados, ensure_ascii=False, indent=2),
+                serializar_dados_protegidos(self.dados),
                 encoding="utf-8",
             )
         except OSError as erro:
             return messagebox.showerror(
                 "Erro ao exportar", f"Não foi possível criar o arquivo JSON:\n{erro}",
                 parent=self)
-        messagebox.showinfo("JSON exportado", f"Arquivo salvo em:\n{destino}", parent=self)
+        messagebox.showinfo(
+            "JSON exportado",
+            "Cópia protegida salva. Ela só poderá ser aberta na mesma conta do Windows.\n"
+            f"{destino}",
+            parent=self,
+        )
 
     def exportar_excel(self):
         destino = filedialog.asksaveasfilename(
